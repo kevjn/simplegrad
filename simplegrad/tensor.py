@@ -9,7 +9,6 @@ class Tensor(object):
 
     def __init__(self, value, parent=None):
         self.debug = ""
-        self.cache = -1
         self.val = np.array(value)
         self.parent = parent
         self.grad = 0
@@ -70,10 +69,7 @@ class Tensor(object):
             # save intermediate inputs for backward pass
             lhs = self.val
 
-            # use cache if operand is self
-            self.val = forward((self.val, self.cache)[self in rhs], *(x.val for x in rhs))
-
-            self.cache = lhs
+            self.val = forward(self.val, *(x.val for x in rhs))
 
             self._backward = self.chain_rule(backward, self._backward, lhs, rhs)
 
