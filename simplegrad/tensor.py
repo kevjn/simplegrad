@@ -83,37 +83,6 @@ class Tensor(object):
         #     # override __(expr.__name__)__ method
         return wrapper
 
-    def parse_args(oper):
-        @functools.wraps(oper)
-        def wrapper(self, *args, **kwargs):
-            return oper(self, *self.parse_operand(args), **kwargs)
-        return wrapper
-
-    @functools.singledispatchmethod
-    def parse_operand(self, args):
-        return args.val
-        raise NotImplementedError()
-
-    @parse_operand.register
-    def _(self, args: tuple):
-        return [self.parse_operand(arg) for arg in args]
-
-    @parse_operand.register
-    def _(self, args: types.FunctionType):
-        return args()
-    
-    @parse_operand.register
-    def _(self, args: np.ndarray):
-        return args
-
-    @parse_operand.register
-    def _(self, args: float):
-        return args
-
-    @parse_operand.register
-    def _(self, args: int):
-        return Tensor(args)
-
     # ***** unary ops *****
     @operation
     def relu(self):
