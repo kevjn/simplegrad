@@ -7,49 +7,16 @@ import operator
 
 class Tensor(object):
 
-    def __init__(self, value, parent=None):
+    def __init__(self, value):
         self.debug = ""
         self.val = np.array(value)
-        self.parent = parent
         self.grad = 0
 
-        self.visited = False
+        self.backward_fxns = [] 
+        self.arguments = []
 
     def __repr__(self):
         return f"Tensor({self.val!r},\ngrad={self.grad!r})"
-
-    def _backward(self):
-        # executed last in the backward pass
-        if self.parent:
-            self.parent.grad += self.grad
-        return self.grad
-
-    def backward(self):
-        # implicit gradient creation for first grad
-        self.grad = np.ones_like(self.val)
-
-        self.visited = True
-        return self._backward()
-        
-    def chain_rule(self, next_backward, backward, inp, operand):
-        @functools.wraps(next_backward)
-        def wrapper():
-            assert len(operand) < 2
-
-            *oper_grad, self.grad = next_backward(self.grad, inp, *operand)
-
-            # propagate back on operands for multiple gradient output
-            for oper in operand:
-                oper.grad += oper_grad[0]
-
-                if oper.visited:
-                    continue # don't loop
-
-                oper.visited = True
-                oper._backward()
-
-            return backward()
-        return wrapper
 
     @property
     def shape(self):
@@ -58,30 +25,94 @@ class Tensor(object):
     def __getitem__(self, idx):
         return self.val[idx]
 
-    def operation(expr):
-        @functools.wraps(expr)
-        def wrapper(self, *rhs, **np_kwargs):
-            self.debug += ' ' + expr.__name__ + ' '
-            assert len(rhs) < 2, "can't use more than 1 operand currently"
+    def _backward(self, dv_fork, dv_parent, parent):
+        parent.grad = dv_parent
+        self.grad += dv_fork
+        self.grad = self.grad,
+        while self.backward_fxns:
+            backward = self.backward_fxns.pop()
+            args = self.grad + self.arguments.pop()
+            self.grad = backward(*args)
 
-            forward, backward = expr(self, **np_kwargs)
+        assert len(self.grad) == 1
+        self.grad = self.grad[0]
 
-            # save intermediate inputs for backward pass
-            lhs = self.val
+        return parent.grad,
 
-            self.val = forward(self.val, *(x.val for x in rhs))
-
-            self._backward = self.chain_rule(backward, self._backward, lhs, rhs)
-
-            return self
+    def backward(self):
+        # implicit gradient creation
+        self._backward(0, np.ones(self.shape), self)
+        
+    def operation(expr, type=None):
+        assert type, "operation type not specified"
+        return type(expr)
 
         # if expr.__name__ in operator.__all__:
         #     # override __(expr.__name__)__ method
+        # TODO: GPU accelerator
+
+    def unary_operation(expr):
+        # @functools.wraps(expr)
+        def wrapper(self, **np_kwargs):
+            self.debug += ' ' + expr.__name__ + ' '
+
+            forward, backward = expr(**np_kwargs)
+            args = self.val,
+
+            # save intermediate variables for backward pass
+            self.arguments.append(args)
+            self.backward_fxns.append(backward)
+
+            self.val = forward(*args)
+
+            return self
         return wrapper
 
-    # ***** unary ops *****
-    @operation
-    def relu(self):
+    def binary_operation(expr):
+        def wrapper(self, operand, **np_kwargs):
+            self.debug += ' ' + expr.__name__ + ' '
+
+            forward, backward = expr(**np_kwargs)
+
+            # unbroadcast results from backward pass
+            backward = Tensor.unbroadcast(backward)
+            args = (self.val, operand.val)
+
+            # propagate back on operand with parent=self as argument
+            self.arguments.append((self,))
+            self.backward_fxns.append(operand._backward)
+
+            # save intermediate variables for backward pass
+            self.arguments.append(args)
+            self.backward_fxns.append(backward) 
+
+            self.val = forward(*args)
+
+            return self
+        return wrapper
+
+    operation.unary = functools.partial(operation, type=unary_operation)
+    operation.binary = functools.partial(operation, type=binary_operation)
+
+    def unbroadcast(df):
+        @functools.wraps(df)
+        def wrapper(dv, x, y):
+            def generator():
+                for grad, shape in zip(df(dv, x, y), (y.shape, x.shape)):
+                    if shape < grad.shape:
+                        fill = shape[-1] if shape else None
+                        yield grad.sum(axis=tuple(idx for idx, (a,b) in \
+                            enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
+                    else:
+                        yield grad
+            
+            return tuple(generator())
+        return wrapper
+
+    # ========== unary ops ==========
+
+    @operation.unary
+    def relu():
 
         def forward(x):
             return np.maximum(x, 0)
@@ -91,9 +122,10 @@ class Tensor(object):
         
         return forward, backward
 
-    # ***** reduce ops *****
-    @operation
-    def sum(self, **np_kwargs):
+    # ========== reduce ops ==========
+
+    @operation.unary
+    def sum(**np_kwargs):
 
         def forward(x):
             return np.sum(x, **np_kwargs)
@@ -104,9 +136,9 @@ class Tensor(object):
             return dv + np.zeros_like(x), # use broadcasting to extend array
 
         return forward, backward
-
-    @operation
-    def exp(self): # TODO: remove self
+    
+    @operation.unary
+    def exp():
 
         def forward(x):
             return np.exp(x)
@@ -116,8 +148,8 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation
-    def log(self):
+    @operation.unary
+    def log():
         def forward(x):
             # x = np.clip(x, 1e-7, 1 - 1e-7)
             return np.log(x)
@@ -127,8 +159,8 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation
-    def max(self, **kwargs):
+    @operation.unary
+    def max(**kwargs):
 
         def forward(x):
             return np.max(x, **kwargs)
@@ -140,89 +172,98 @@ class Tensor(object):
 
         return forward, backward
 
-    def unbroadcast(arr, shape):
-        if shape < arr.shape:
-            fill = shape[-1] if shape else None
-            return arr.sum(axis=tuple(idx for idx, (a,b) in enumerate(it.zip_longest(arr.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
-        return arr
+    # ========== binary ops ==========
 
-    # ***** binary ops *****
-    @operation
-    def sub(self):
+    @operation.binary
+    def sub():
 
         def forward(x,y):
             return x-y
 
         def backward(dv, x, y):
-            return Tensor.unbroadcast(-dv, y.val.shape), Tensor.unbroadcast(dv, x.shape)
+            return -dv, dv
 
         return forward, backward
 
-    @operation
-    def pow(self):
+    @operation.binary
+    def pow():
 
         def forward(x, y):
             return x ** y
 
         def backward(dv, x, y):
-            return Tensor.unbroadcast(dv * x ** y.val * np.log(x), y.val.shape), \
-                   Tensor.unbroadcast(dv * y.val * x ** (y.val-1.0), x.shape)
+            return dv * x ** y * np.log(x), \
+                   dv * y * x ** (y-1.0)
 
         return forward, backward
 
-    @operation
-    def mul(self):
+    @operation.binary
+    def mul():
 
         def forward(x, y):
             return x * y
 
         def backward(dv, x, y):
-            return Tensor.unbroadcast(dv * x, y.val.shape), Tensor.unbroadcast(dv * y.val, x.shape)
-            # return dv, y.out
+            return dv * x, dv * y
 
         return forward, backward
 
-    @operation
-    def add(self):
+    @operation.binary
+    def add():
         def forward(x, y):
             return x + y
 
         def backward(dv, x, y):
-            return Tensor.unbroadcast(dv, y.val.shape), Tensor.unbroadcast(dv, x.shape)
             return dv, dv
 
         return forward, backward
 
-    # ***** processing ops *****
-    @operation
-    def dot(self):
+    # ========== processing ops ==========
+
+    @operation.binary
+    def dot():
 
         def forward(x, y):
             return x @ y
         
         def backward(dv, x, y):
-            return x.T @ dv, dv @ y.val.T
+            return x.T @ dv, dv @ y.T
 
         return forward, backward
 
-    # ***** composite ops *****
+    # ========== composite ops ==========
+
     def div(self, x):
         assert isinstance(x, type(self))
-        return self.mul(x.pow(Tensor(np.array([-1.]))))
+        return self.mul(x.pow(Tensor(-1.0)))
 
     def softmax(self):
-        _max = Tensor(self.val, parent=self).max(axis=-1, keepdims=True)
+        _max = self.fork().max(axis=-1, keepdims=True)
         self.sub(_max).exp()
-        s = Tensor(self.val, parent=self).sum(axis=-1, keepdims=True)
+        s = self.fork().sum(axis=-1, keepdims=True)
         return self.div(s)
 
-    # numericaly stable
     def logsoftmax(self):
-        _max = Tensor(self.val, parent=self).max(axis=-1, keepdims=True)
-        s = Tensor(self.val, parent=self).sub(_max).exp().sum(axis=-1, keepdims=True).log()
-        _max.add(s)
+        _max = self.fork().max(axis=-1, keepdims=True)
+        _sub = self.fork().sub(_max).exp().sum(axis=-1, keepdims=True).log()
+        _max.add(_sub)
         return self.sub(_max)
 
     def mean(self):
         a = Tensor(self.shape[-1])
         return self.sum(axis=-1, keepdims=True).div(a)
+
+    # ========== control flow ops ==========
+
+    def fork(self):
+        self.debug += " fork "
+
+        def fork_backward(dv):
+            self.grad += dv # accumulate parent gradient
+            return dv, 
+
+        fork = Tensor(self.val)
+        fork.backward_fxns.append(fork_backward)
+        fork.arguments.append(tuple()) # empty args
+
+        return fork
