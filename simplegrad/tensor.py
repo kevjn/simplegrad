@@ -94,11 +94,15 @@ class Tensor(object):
     operation.unary = functools.partial(operation, type=unary_operation)
     operation.binary = functools.partial(operation, type=binary_operation)
 
+    @staticmethod
     def unbroadcast(df):
         @functools.wraps(df)
         def wrapper(dv, x, y):
             def generator():
                 for grad, shape in zip(df(dv, x, y), (y.shape, x.shape)):
+                    if len(shape) > 3:
+                        yield grad # TODO: Fix for 4d tensors
+                        continue
                     if shape < grad.shape:
                         fill = shape[-1] if shape else None
                         yield grad.sum(axis=tuple(idx for idx, (a,b) in \
@@ -228,6 +232,41 @@ class Tensor(object):
         
         def backward(dv, x, y):
             return x.T @ dv, dv @ y.T
+
+        return forward, backward
+
+    @operation.binary
+    def conv2d(padding=0, strides=1): # kernel size
+        # TODO: fix strides
+        def forward(x, w):
+            assert x.ndim, w.ndim == (4, 4)
+            # cross correlation
+            # w = np.flipud(np.fliplr(w))
+
+            N, cin, Hin, Win = x.shape
+            cout, cin, ky, kx = w.shape
+
+            Hout = Hin - ky + 1
+            Wout = Win - kx + 1
+
+            out_strides = (x.strides[0],) + x.strides[2:] + x.strides[1:]
+
+            out_shape = (N, Hout, Wout, cin, ky, kx)
+
+            x = np.lib.stride_tricks.as_strided(x, strides=out_strides, shape=out_shape)
+
+            # swap axis to mimic pytorch
+            return np.tensordot(w, x, axes=((1,2,3), (-3,-2,-1))).swapaxes(0,1)
+
+        def backward(dv, x, w):
+            dx = forward(x.swapaxes(0,1), dv.swapaxes(0,1))
+
+            # pad with zeros to simulate a 'full' convolution
+            padding = ((0,0),) * 2 + ((dv.shape[-2]//2,) * 2,) + ((dv.shape[-1]//2,) * 2,)
+            w = np.pad(w, pad_width=padding, mode='constant')
+
+            dw = forward(w.swapaxes(0,1), dv).swapaxes(0,1)
+            return dx, dw
 
         return forward, backward
 

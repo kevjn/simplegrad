@@ -10,6 +10,10 @@ import pytest
 
 from nnfs.datasets import spiral_data
 
+import cv2
+
+import tensorflow as tf
+
 def test_softmax_and_mean():
     from scipy.special import softmax
 
@@ -138,6 +142,92 @@ def test_backward_pass_with_loss():
 
     for a,b in zip(test_pytorch(), test_simplegrad()):
         assert np.allclose(a,b)
+
+def test_conv2d_forward_and_backward():
+
+    image  = np.random.ranf([20, 16, 50, 100])
+    filter = np.random.ranf([33, 16, 3, 3])
+
+    # ===== pytorch =====
+    x = torch.tensor(image, requires_grad=True)
+    w0 = torch.tensor(filter, requires_grad=True)
+
+    a = torch.nn.functional.conv2d(x, w0, padding=0).sum()
+
+    a.backward()
+
+    # ===== simplegrad =====
+    c = Tensor(filter)
+    out_simplegrad = Tensor(image).conv2d(c).sum()
+
+    out_simplegrad.backward()
+
+    assert np.allclose(a.detach().numpy(), out_simplegrad.val)
+
+
+def test_simple_conv2d():
+    x = np.array([
+                 [[0, 0, 0],
+                  [0, 1, 1],
+                  [0, 1, 0]],
+
+                 [[0, 0, 0],
+                  [0, 1, 1],
+                  [0, 1, 0]],
+
+                 [[0, 0, 0],
+                  [0, 1, 1],
+                  [0, 1, 0]],
+
+                 ], dtype='float')
+    
+    w_k = np.array([
+                   [[1, 0],
+                    [1, 0]],
+
+                   [[1, 0],
+                    [1, 0]],
+
+                   [[1, 0],
+                    [1, 0]],
+
+                   ], dtype='float')
+
+    x = x + np.zeros(((3,) + x.shape))
+    w_k = w_k + np.zeros(((1,) + w_k.shape))
+
+    # ===== pytorch =====
+    x_pt = torch.tensor(x, requires_grad=True)
+    w0 = torch.tensor(w_k, requires_grad=True)
+    a = torch.nn.functional.conv2d(x_pt, w0, padding=0)
+    a = a.sum()
+    a.backward()
+
+    # ===== simplegrad =====
+    w = Tensor(w_k)
+    x = Tensor(x).conv2d(w).sum()
+    x.backward()
+
+    assert (a.detach().numpy() == x.val).all()
+
+    assert (w0.grad.detach().numpy() == w.grad).all()
+    assert (x_pt.grad.detach().numpy() == x.grad).all()
+
+def test_image_conv2d():
+    image = cv2.imread('city.jpeg') 
+    image = cv2.cvtColor(src=image, code=cv2.COLOR_BGR2GRAY) 
+
+    image = image.reshape(-1, 1, *image.shape)
+
+    k = np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]])
+    k = k.reshape(-1, 1, *k.shape)
+
+    # Edge Detection Kernel
+    kernel = Tensor(k)
+
+    res = Tensor(image).conv2d(kernel, padding=2)
+
+    cv2.imwrite('2DConvolved_test.jpg', res.val.squeeze())
 
 @pytest.mark.slow
 def test_train_simple_classifier():
