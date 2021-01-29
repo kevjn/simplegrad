@@ -262,7 +262,7 @@ class Tensor(object):
             dx = forward(x.swapaxes(0,1), dv.swapaxes(0,1))
 
             # pad with zeros to simulate a 'full' convolution
-            padding = ((0,0),) * 2 + ((dv.shape[-2]//2,) * 2,) + ((dv.shape[-1]//2,) * 2,)
+            padding = ((0,0),) * 2 + tuple(map(lambda x: (x//2,)*2, dv.shape[-2:]))
             w = np.pad(w, pad_width=padding, mode='constant')
 
             dw = forward(w.swapaxes(0,1), dv).swapaxes(0,1)
