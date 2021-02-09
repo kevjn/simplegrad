@@ -69,6 +69,7 @@ class Tensor(object):
         return wrapper
 
     def binary_operation(expr):
+        # @functools.wraps(expr)
         def wrapper(self, operand, **np_kwargs):
             self.debug += ' ' + expr.__name__ + ' '
 
@@ -91,12 +92,27 @@ class Tensor(object):
             return self
         return wrapper
 
+
+    def typeless_operation(expr):
+        def wrapper(self, func, *args, **kwargs):
+            nonlocal expr
+            # add func to expr closure
+            _expr = expr(func.__func__.__closure__[0].cell_contents)
+            _expr.__name__ = func.__name__
+            # swap wrapper
+            func.__func__.__closure__[0].cell_contents = _expr
+            # call correct operation type
+            func(*args, **kwargs)
+            return self
+        return wrapper
+
     operation.unary = functools.partial(operation, type=unary_operation)
     operation.binary = functools.partial(operation, type=binary_operation)
+    operation.typeless = functools.partial(operation, type=typeless_operation)
 
     @staticmethod
     def unbroadcast(df):
-        @functools.wraps(df)
+        # @functools.wraps(df)
         def wrapper(dv, x, y):
             def generator():
                 for grad, shape in zip(df(dv, x, y), (y.shape, x.shape)):
@@ -170,9 +186,10 @@ class Tensor(object):
             return np.max(x, **kwargs)
         
         def backward(dv, x):
-            mask = (x == np.max(x, **kwargs))
-            div = mask.sum(**kwargs)
-            return mask*dv / div,
+            idx = tuple(np.argwhere(x == x.max(**kwargs))[0])
+            mask = np.zeros_like(x)
+            mask[idx] = 1
+            return mask*dv,
 
         return forward, backward
 
@@ -225,50 +242,80 @@ class Tensor(object):
     # ========== processing ops ==========
 
     @operation.binary
-    def dot():
+    def dot(f_subscripts='i...j,j...h->i...h', 
+            b_subscripts=('j...i,j...h->i...h','i...j,h...j->i...h')):
 
         def forward(x, y):
+            return np.einsum(f_subscripts,x,y)
             return x @ y
         
         def backward(dv, x, y):
-            return x.T @ dv, dv @ y.T
+            return *it.starmap(np.einsum, zip(b_subscripts, (x,dv), (dv,y))),
+            return x.T @ dv, y.T @ dv
 
         return forward, backward
 
-    @operation.binary
-    def conv2d(padding=0, strides=1): # kernel size
-        # TODO: fix strides
-        def forward(x, w):
-            assert x.ndim, w.ndim == (4, 4)
-            # cross correlation
-            # w = np.flipud(np.fliplr(w))
+    # ========== test ops ==========
 
-            N, cin, Hin, Win = x.shape
-            cout, cin, ky, kx = w.shape
+    @operation.typeless
+    def sliding_window(kernel_fxn): # sliding tensor
+        def closure(kernel_size=(2,2), stride=1, **kwargs):
+            kernel_forward, kernel_backward = kernel_fxn(**kwargs)
+            windows = None
+            out = None
 
-            Hout = Hin - ky + 1
-            Wout = Win - kx + 1
+            def forward(x, *args):
+                nonlocal windows
+                nonlocal out
 
-            out_strides = (x.strides[0],) + x.strides[2:] + x.strides[1:]
+                N, cin, *in_shape = x.shape
+                kdims = len(kernel_size)
 
-            out_shape = (N, Hout, Wout, cin, ky, kx)
+                truncated_out_shape = *((xin - kin) // 1 + 1 for xin,kin in zip(in_shape, kernel_size)),
+                out_shape = N, cin, *truncated_out_shape, *kernel_size
+                out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
 
-            x = np.lib.stride_tricks.as_strided(x, strides=out_strides, shape=out_shape)
+                # generate windows
+                windows = np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
+                ws = windows
 
-            # swap axis to mimic pytorch
-            return np.tensordot(w, x, axes=((1,2,3), (-3,-2,-1))).swapaxes(0,1)
+                cout = args[0].shape[0] if args else cin
 
-        def backward(dv, x, w):
-            dx = forward(x.swapaxes(0,1), dv.swapaxes(0,1))
+                # init truncated output and set values
+                out = np.zeros((N, cout, *truncated_out_shape))
+                for N, cout, *i in np.ndindex(*out.shape):
+                    out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], *(arg[cout] for arg in args))
 
-            # pad with zeros to simulate a 'full' convolution
-            padding = ((0,0),) * 2 + tuple(map(lambda x: (x//2,)*2, dv.shape[-2:]))
-            w = np.pad(w, pad_width=padding, mode='constant')
+                return out
 
-            dw = forward(w.swapaxes(0,1), dv).swapaxes(0,1)
-            return dx, dw
+            def backward(dv, x, *args):
+                nonlocal windows
+                nonlocal out
+                assert dv.shape == out.shape
 
-        return forward, backward
+                if args:
+                    # sparse matrix for each element in dv for binary operations
+                    a = np.zeros(out.shape + kernel_size[:1] + windows.shape[-1:])
+                    np.einsum('...ii->...i', a)[:] = dv[...,None] 
+                    dv = a
+
+                dx = np.zeros_like(x, dtype='float64')
+                dw = [np.zeros_like(arg, dtype='float64') for arg in args]
+
+                dx_ws = np.lib.stride_tricks.as_strided(dx, shape=windows.shape, strides=windows.strides)
+                x_ws = windows
+
+                for N, cout, *i in np.ndindex(*out.shape):
+                    grad = kernel_backward(dv[(N, cout, *i)], \
+                            x_ws[(N, slice(None), *i)], *(a[cout] for a in args))
+                    # accumulate gradients
+                    for tot_grad, grad in zip((*(d[cout] for d in dw), dx_ws[(N, slice(None), *i)]), grad):
+                        tot_grad += grad
+
+                return *dw, dx
+
+            return forward, backward
+        return closure
 
     # ========== composite ops ==========
 
@@ -291,6 +338,10 @@ class Tensor(object):
     def mean(self):
         a = Tensor(self.shape[-1])
         return self.sum(axis=-1, keepdims=True).div(a)
+
+    def conv2d(self, w, padding=0, strides=1):
+        return self.sliding_window(self.dot, w, f_subscripts='...ijk,...ijk->...', \
+        b_subscripts=('i...j,h...j->i...h', 'i...j,h...j->h...i'), kernel_size=w.shape[-2:], stride=1)
 
     # ========== control flow ops ==========
 
