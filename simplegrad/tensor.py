@@ -255,7 +255,7 @@ class Tensor(object):
 
         return forward, backward
 
-    # ========== test ops ==========
+    # ========== abstract ops ==========
 
     @operation.typeless
     def sliding_window(kernel_fxn): # sliding tensor
@@ -343,17 +343,39 @@ class Tensor(object):
         return self.sliding_window(self.dot, w, f_subscripts='...ijk,...ijk->...', \
         b_subscripts=('i...j,h...j->i...h', 'i...j,h...j->h...i'), kernel_size=w.shape[-2:], stride=1)
 
+    def sigmoid(self):
+        return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))
+
+    def tanh(self):
+        e2, e3, e4 = self.fork().mul(Tensor(-1)).exp(), self.fork().exp(), \
+                     self.fork().mul(Tensor(-1)).exp()
+
+        return self.exp().sub(e2).div(e3.add(e4))
+
     # ========== control flow ops ==========
 
     def fork(self):
         self.debug += " fork "
 
+        dv_fork = None
+
         def fork_backward(dv):
-            self.grad += dv # accumulate parent gradient
-            return dv, 
+            nonlocal dv_fork
+            dv_fork = dv
+            return dv,
 
         fork = Tensor(self.val)
         fork.backward_fxns.append(fork_backward)
         fork.arguments.append(tuple()) # empty args
+
+        def parent_backward(dv):
+            nonlocal dv_fork
+            assert dv_fork is not None
+            return dv + dv_fork, # accumulate parent gradient
+
+        self.backward_fxns.append(parent_backward)
+        self.arguments.append(tuple()) # empty args
+
+        fork.debug += " join "
 
         return fork
