@@ -14,6 +14,43 @@ import cv2
 
 import tensorflow as tf
 
+def test_sigmoid():
+    a = np.random.randn(10)
+    b = torch.tensor(a, requires_grad=True)
+    c = torch.sigmoid(b).sum()
+    c.backward()
+
+    d = Tensor(a).sigmoid().sum()
+    d.backward()
+
+    assert np.allclose(b.grad, d.grad)
+
+def test_tanh():
+    a = np.random.randn(10)
+    b = torch.tensor(a, requires_grad=True)
+    c = torch.tanh(b).sum()
+    c.backward()
+
+    d = Tensor(a)
+    e = d.tanh().sum()
+    e.backward()
+
+    assert np.allclose(c.detach().numpy(), e.val)
+    assert np.allclose(b.grad, d.grad)
+
+def test_multiple_tanh():
+    a = np.random.randn(10)
+    b = torch.tensor(a, requires_grad=True)
+    c = b.tanh().tanh().tanh().tanh().sum()
+    c.backward()
+
+    d = Tensor(a)
+    e = d.tanh().tanh().tanh().tanh().sum()
+    e.backward()
+
+    assert np.allclose(c.detach().numpy(), e.val)
+    assert np.allclose(b.grad, d.grad)
+
 def test_softmax_and_mean():
     from scipy.special import softmax
 
