@@ -264,7 +264,7 @@ class Tensor(object):
             windows = None
             out = None
 
-            def forward(x, *args):
+            def forward(x, operand=None):
                 nonlocal windows
                 nonlocal out
 
@@ -279,40 +279,53 @@ class Tensor(object):
                 windows = np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
                 ws = windows
 
-                cout = args[0].shape[0] if args else cin
-
-                # init truncated output and set values
-                out = np.zeros((N, cout, *truncated_out_shape))
-                for N, cout, *i in np.ndindex(*out.shape):
-                    out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], *(arg[cout] for arg in args))
+                if operand is not None:
+                    cout = operand.shape[0]
+                    # init truncated output and set each element
+                    out = np.zeros((N, cout, *truncated_out_shape))
+                    for N, cout, *i in np.ndindex(out.shape):
+                        out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], operand[cout])
+                else:
+                    cout = cin
+                    out = np.zeros((N, cout, *truncated_out_shape))
+                    for N, cout, *i in np.ndindex(out.shape):
+                        out[(N, cout, *i)] = kernel_forward(ws[(N, cout, *i)])
 
                 return out
 
-            def backward(dv, x, *args):
+            def backward(dv, x, operand=None):
                 nonlocal windows
                 nonlocal out
                 assert dv.shape == out.shape
 
-                if args:
+                x_ws = windows
+                dx = np.zeros_like(x, dtype='float64')
+                dx_ws = np.lib.stride_tricks.as_strided(dx, shape=x_ws.shape, strides=x_ws.strides)
+
+                if operand is not None:
                     # sparse matrix for each element in dv for binary operations
                     a = np.zeros(out.shape + kernel_size[:1] + windows.shape[-1:])
                     np.einsum('...ii->...i', a)[:] = dv[...,None] 
                     dv = a
 
-                dx = np.zeros_like(x, dtype='float64')
-                dw = [np.zeros_like(arg, dtype='float64') for arg in args]
+                    dw = np.zeros_like(operand, dtype='float64')
 
-                dx_ws = np.lib.stride_tricks.as_strided(dx, shape=windows.shape, strides=windows.strides)
-                x_ws = windows
+                    for N, cout, *i in np.ndindex(*out.shape):
+                        grad = kernel_backward(dv[(N, cout, *i)], \
+                                x_ws[(N, slice(None), *i)], operand[cout])
+                        # accumulate gradients
+                        for tot_grad, grad in zip((dw[cout], dx_ws[(N, slice(None), *i)]), grad):
+                            tot_grad += grad
 
-                for N, cout, *i in np.ndindex(*out.shape):
-                    grad = kernel_backward(dv[(N, cout, *i)], \
-                            x_ws[(N, slice(None), *i)], *(a[cout] for a in args))
-                    # accumulate gradients
-                    for tot_grad, grad in zip((*(d[cout] for d in dw), dx_ws[(N, slice(None), *i)]), grad):
-                        tot_grad += grad
+                    return dw, dx
+                else:
+                    for N, cout, *i in np.ndindex(*out.shape):
+                        grad = kernel_backward(dv[(N, cout, *i)], x_ws[(N, cout, *i)])
+                        # accumulate gradients
+                        for tot_grad, grad in zip((dx_ws[(N, cout, *i)],), grad):
+                            tot_grad += grad
 
-                return *dw, dx
+                    return dx,
 
             return forward, backward
         return closure
