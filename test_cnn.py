@@ -137,6 +137,23 @@ def test_simple_maxpool2d():
 
         assert np.allclose(maxpool2d.grad, x.grad)
 
+def test_maxpool2d():
+    image  = np.random.ranf([10, 20, 20, 40]) # N, in_channels, Hin, Win
+
+    # ===== pytorch =====
+    x = torch.tensor(image, requires_grad=True)
+    maxpool2d_p = torch.nn.MaxPool2d((3,3), stride=1)
+    maxpool2d_p = maxpool2d_p(x).sum()
+    maxpool2d_p.backward()
+
+    # ===== simplegrad =====
+    maxpool2d = Tensor(image)
+    maxpool2d.sliding_window(maxpool2d.max, kernel_size=(3,3), stride=1).sum()
+    maxpool2d.backward()
+
+    assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.val)
+    assert np.allclose(maxpool2d.grad, x.grad)
+
 
 def test_simple_conv1d_maxpool1d():
 
