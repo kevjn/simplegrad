@@ -1,9 +1,63 @@
-import functools
-import types
-import numpy as np
+import functools, types, numpy as np
 import typing
 import itertools as it
 import operator
+import pyopencl as cl
+from collections import defaultdict
+
+class Device(object):
+
+    def load_device(device):
+        device()
+        Device.load = device.load
+
+    def load(cpu_expr, **kwargs):
+        # use cpu forward/backward fxn as default
+        return cpu_expr(**kwargs) 
+
+    class GPU:
+        def __init__(self):
+            # initialize opencl
+            Device.GPU.ctx = cl.create_some_context()
+            Device.GPU.queue = cl.CommandQueue(self.ctx)
+
+            prg = cl.Program(Device.GPU.ctx, open('./accelerators/gpu_ops.cl').read()).build()
+            ops = defaultdict(lambda: [None, None])
+            for kernel in prg.all_kernels():
+                tokens = kernel.function_name.split("_")
+                assert len(tokens) == 2
+                name, direction = tokens
+                ops[name][direction != "forward"] = Device.GPU.opencl_parser(kernel)
+
+            # freeze dictionary values
+            Device.GPU.ops = defaultdict(lambda: (None, None), \
+                {name : tuple(v) for name, v in ops.items()})
+
+        def load(cpu_expr, **kwargs):
+            # fall back on cpu if no implementation exists
+            return *(a or b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
+
+        def opencl_parser(kernel):
+            def wrapper(*args, **kwargs):
+                # must be float32
+                args = (args[0].astype(np.float32),)
+
+                # allocate input buffer(s)
+                args_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
+                           cl.mem_flags.COPY_HOST_PTR, hostbuf=x) for x in args),
+                
+                # allocate output buffer(s) on device
+                res_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, x.nbytes) for x in args),
+
+                # call the kernel, leave the local work size (None) to the implementation
+                kernel(Device.GPU.queue, [args[0].size], None, *args_g, *res_g)
+
+                # create numpy array for results and copy from device
+                res = np.empty_like(args[0])
+                cl._enqueue_read_buffer(Device.GPU.queue, *res_g, res).wait()
+
+                return res
+            return wrapper
 
 class Tensor(object):
 
@@ -49,14 +103,13 @@ class Tensor(object):
 
         # if expr.__name__ in operator.__all__:
         #     # override __(expr.__name__)__ method
-        # TODO: GPU accelerator
 
     def unary_operation(expr):
         # @functools.wraps(expr)
         def wrapper(self, **np_kwargs):
             self.debug += ' ' + expr.__name__ + ' '
 
-            forward, backward = expr(**np_kwargs)
+            forward, backward = Device.load(expr, **np_kwargs)
             args = self.val,
 
             # save intermediate variables for backward pass
@@ -73,7 +126,7 @@ class Tensor(object):
         def wrapper(self, operand, **np_kwargs):
             self.debug += ' ' + expr.__name__ + ' '
 
-            forward, backward = expr(**np_kwargs)
+            forward, backward = Device.load(expr, **np_kwargs)
 
             # unbroadcast results from backward pass
             backward = Tensor.unbroadcast(backward)

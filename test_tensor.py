@@ -1,4 +1,4 @@
-from simplegrad.tensor import Tensor
+from simplegrad.tensor import Device, Tensor
 from simplegrad import optim as optimizer
 
 import numpy as np
@@ -248,3 +248,9 @@ def test_train_simple_classifier():
     plt.scatter(X[:, 0], X[:, 1], c=y_true, s=5, cmap="brg", alpha=0.5)
     plt.grid()
     plt.show()
+
+def test_gpu():
+    Device.load_device(Device.GPU)
+
+    test_train_simple_classifier()
+    assert True
