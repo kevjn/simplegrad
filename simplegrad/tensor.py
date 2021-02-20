@@ -114,19 +114,19 @@ class Tensor(object):
         return wrapper
 
     def binary_operation(expr):
-
         def unbroadcast(backward):
             def wrapper(dv, x, y):
                 def generator():
                     for grad, shape in zip(backward(dv, x, y), (y.shape, x.shape)):
                         if shape < grad.shape:
-                            fill = shape[-1] if shape else None
-                            yield grad.sum(axis=tuple(idx for idx, (a,b) in \
-                                enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
+                            fill = shape and shape[-1] or None
+                            axis = tuple(i for i, (a,b) in enumerate(it.zip_longest
+                                        (grad.shape, shape, fillvalue=fill)) if a!=b)
+                            yield grad.sum(axis=axis).reshape(shape)
                         else:
                             yield grad
                 
-                return tuple(generator())
+                return *generator(),
             return wrapper
 
         def propagate(backward, operand):
