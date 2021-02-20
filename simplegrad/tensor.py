@@ -97,20 +97,9 @@ class Tensor(object):
         # implicit gradient creation
         self._backward(0, np.ones(self.shape), self)
         
-    def operation(expr, type=None):
-        assert type, "operation type not specified"
-        return type(expr)
-
-        # if expr.__name__ in operator.__all__:
-        #     # override __(expr.__name__)__ method
-
-    def unary_operation(expr):
-        # @functools.wraps(expr)
-        def wrapper(self, **np_kwargs):
-            self.debug += ' ' + expr.__name__ + ' '
-
-            forward, backward = Device.load(expr, **np_kwargs)
-            args = self.val,
+    def operation(expr):
+        def wrapper(self, *args, **kwargs):
+            forward, backward = Device.load(expr, **kwargs)
 
             # save intermediate variables for backward pass
             self.arguments.append(args)
@@ -121,66 +110,62 @@ class Tensor(object):
             return self
         return wrapper
 
+    def unary_operation(expr):
+        def wrapper(self, *args, **kwargs):
+            assert not args, "unary operations can't have positional arguments"
+            args = self.val, 
+
+            return Tensor.operation(expr)(self, *args, **kwargs)
+        return wrapper
+
     def binary_operation(expr):
-        # @functools.wraps(expr)
-        def wrapper(self, operand, **np_kwargs):
-            self.debug += ' ' + expr.__name__ + ' '
-
-            forward, backward = Device.load(expr, **np_kwargs)
-
-            # unbroadcast results from backward pass
-            backward = Tensor.unbroadcast(backward)
-            args = (self.val, operand.val)
+        def wrapper(self, operand, **kwargs):
+            args = self.val, operand.val
 
             # propagate back on operand with parent=self as argument
             self.arguments.append((self,))
             self.backward_fxns.append(operand._backward)
 
-            # save intermediate variables for backward pass
-            self.arguments.append(args)
-            self.backward_fxns.append(backward) 
-
-            self.val = forward(*args)
-
-            return self
+            # unbroadcast results from backward pass
+            return Tensor.operation(Tensor.unbroadcast(expr))(self, *args, **kwargs)
         return wrapper
 
-
-    def typeless_operation(expr):
-        def wrapper(self, func, *args, **kwargs):
-            nonlocal expr
-            # add func to expr closure
-            _expr = expr(func.__func__.__closure__[0].cell_contents)
-            _expr.__name__ = func.__name__
+    def abstract_operation(expr):
+        def wrapper(self, fxn, *args, **kwargs):
+            derived_expr = fxn.__func__.__closure__[0].cell_contents
+            base_expr = functools.partial(expr, derived_expr, **kwargs)
             # swap wrapper
-            func.__func__.__closure__[0].cell_contents = _expr
+            fxn.__func__.__closure__[0].cell_contents = base_expr
             # call correct operation type
-            func(*args, **kwargs)
+            fxn(*args)
             return self
         return wrapper
 
-    operation.unary = functools.partial(operation, type=unary_operation)
-    operation.binary = functools.partial(operation, type=binary_operation)
-    operation.typeless = functools.partial(operation, type=typeless_operation)
+    operation.unary = unary_operation
+    operation.binary = binary_operation
+    operation.abstract = abstract_operation
 
     @staticmethod
-    def unbroadcast(df):
-        # @functools.wraps(df)
-        def wrapper(dv, x, y):
-            def generator():
-                for grad, shape in zip(df(dv, x, y), (y.shape, x.shape)):
-                    if len(shape) > 3:
-                        yield grad # TODO: Fix for 4d tensors
-                        continue
-                    if shape < grad.shape:
-                        fill = shape[-1] if shape else None
-                        yield grad.sum(axis=tuple(idx for idx, (a,b) in \
-                            enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
-                    else:
-                        yield grad
-            
-            return tuple(generator())
-        return wrapper
+    def unbroadcast(expr):
+        def expr_wrapper(**kwargs):
+            forward, backward = expr(**kwargs)
+            return forward, backward_wrapper(backward)
+
+        def backward_wrapper(backward):
+            def _wrapper(dv, x, y):
+                def generator():
+                    for grad, shape in zip(backward(dv, x, y), (y.shape, x.shape)):
+                        if shape < grad.shape:
+                            fill = shape[-1] if shape else None
+                            yield grad.sum(axis=tuple(idx for idx, (a,b) in \
+                                enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
+                        else:
+                            yield grad
+                
+                return tuple(generator())
+            return _wrapper
+
+        return expr_wrapper
 
     # ========== unary ops ==========
 
@@ -310,78 +295,71 @@ class Tensor(object):
 
     # ========== abstract ops ==========
 
-    @operation.typeless
-    def sliding_window(kernel_fxn): # sliding tensor
-        def closure(kernel_size=(2,2), stride=1, **kwargs):
-            kernel_forward, kernel_backward = kernel_fxn(**kwargs)
-            windows = None
-            out = None
+    @operation.abstract
+    def sliding_window(kernel_fxn, kernel_size=(2,2), stride=1, **kwargs):
+        kernel_forward, kernel_backward = kernel_fxn(**kwargs)
+        ws = None # windows
 
-            def forward(x, operand=None):
-                nonlocal windows
-                nonlocal out
+        def forward(x, operand=None):
+            nonlocal ws
+            N, cin, *in_shape, kdims = *x.shape, len(kernel_size)
 
-                N, cin, *in_shape = x.shape
-                kdims = len(kernel_size)
+            # get window shape and strides
+            truncated_out_shape = *((xin - kin) // 1 + 1 for xin, kin in zip(in_shape, kernel_size)),
+            out_shape = N, cin, *truncated_out_shape, *kernel_size
+            out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
 
-                truncated_out_shape = *((xin - kin) // 1 + 1 for xin,kin in zip(in_shape, kernel_size)),
-                out_shape = N, cin, *truncated_out_shape, *kernel_size
-                out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
+            # get windows
+            ws = np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
 
-                # generate windows
-                windows = np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
-                ws = windows
+            if operand is not None:
+                cout = operand.shape[0]
+                # init truncated output and set each element
+                out = np.zeros((N, cout, *truncated_out_shape))
+                for N, cout, *i in np.ndindex(out.shape):
+                    out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], operand[cout])
+            else:
+                cout = cin
+                out = np.zeros((N, cout, *truncated_out_shape))
+                for N, cout, *i in np.ndindex(out.shape):
+                    out[(N, cout, *i)] = kernel_forward(ws[(N, cout, *i)])
 
-                if operand is not None:
-                    cout = operand.shape[0]
-                    # init truncated output and set each element
-                    out = np.zeros((N, cout, *truncated_out_shape))
-                    for N, cout, *i in np.ndindex(out.shape):
-                        out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], operand[cout])
-                else:
-                    cout = cin
-                    out = np.zeros((N, cout, *truncated_out_shape))
-                    for N, cout, *i in np.ndindex(out.shape):
-                        out[(N, cout, *i)] = kernel_forward(ws[(N, cout, *i)])
+            return out
+        
+        def backward(dv, x, operand=None):
+            nonlocal ws
+            out_shape = dv.shape
 
-                return out
+            x_ws = ws
+            dx = np.zeros_like(x, dtype='float64')
+            dx_ws = np.lib.stride_tricks.as_strided(dx, shape=x_ws.shape, strides=x_ws.strides)
 
-            def backward(dv, x, operand=None):
-                nonlocal windows
-                nonlocal out
-                assert dv.shape == out.shape
+            if operand is not None:
+                # sparse matrix for each element in dv for binary operations
+                a = np.zeros(out_shape + kernel_size[:1] + ws.shape[-1:])
+                np.einsum('...ii->...i', a)[:] = dv[...,None] 
+                dv = a
 
-                x_ws = windows
-                dx = np.zeros_like(x, dtype='float64')
-                dx_ws = np.lib.stride_tricks.as_strided(dx, shape=x_ws.shape, strides=x_ws.strides)
+                dw = np.zeros_like(operand, dtype='float64')
 
-                if operand is not None:
-                    # sparse matrix for each element in dv for binary operations
-                    a = np.zeros(out.shape + kernel_size[:1] + windows.shape[-1:])
-                    np.einsum('...ii->...i', a)[:] = dv[...,None] 
-                    dv = a
+                for N, cout, *i in np.ndindex(*out_shape):
+                    grad = kernel_backward(dv[(N, cout, *i)], \
+                            x_ws[(N, slice(None), *i)], operand[cout])
+                    # accumulate gradients
+                    for tot_grad, grad in zip((dw[cout], dx_ws[(N, slice(None), *i)]), grad):
+                        tot_grad += grad
 
-                    dw = np.zeros_like(operand, dtype='float64')
+                return dw, dx
+            else:
+                for N, cout, *i in np.ndindex(*out_shape):
+                    grad = kernel_backward(dv[(N, cout, *i)], x_ws[(N, cout, *i)])
+                    # accumulate gradients
+                    for tot_grad, grad in zip((dx_ws[(N, cout, *i)],), grad):
+                        tot_grad += grad
 
-                    for N, cout, *i in np.ndindex(*out.shape):
-                        grad = kernel_backward(dv[(N, cout, *i)], \
-                                x_ws[(N, slice(None), *i)], operand[cout])
-                        # accumulate gradients
-                        for tot_grad, grad in zip((dw[cout], dx_ws[(N, slice(None), *i)]), grad):
-                            tot_grad += grad
+                return dx,
 
-                    return dw, dx
-                else:
-                    for N, cout, *i in np.ndindex(*out.shape):
-                        grad = kernel_backward(dv[(N, cout, *i)], x_ws[(N, cout, *i)])
-                        # accumulate gradients
-                        for tot_grad, grad in zip((dx_ws[(N, cout, *i)],), grad):
-                            tot_grad += grad
-
-                    return dx,
-
-            return forward, backward
-        return closure
+        return forward, backward
 
     # ========== composite ops ==========
 
