@@ -79,23 +79,18 @@ class Tensor(object):
     def __getitem__(self, idx):
         return self.val[idx]
 
-    def _backward(self, dv_fork, dv_parent, parent):
-        parent.grad = dv_parent
-        self.grad += dv_fork
-        self.grad = self.grad,
+    def _backward(self, dv):
+        self.grad += dv
         while self.backward_fxns:
             backward = self.backward_fxns.pop()
-            args = self.grad + self.arguments.pop()
+            args = self.grad, *self.arguments.pop()
             self.grad = backward(*args)
 
-        assert len(self.grad) == 1
-        self.grad = self.grad[0]
-
-        return parent.grad,
+        assert not type(self.grad) is tuple
 
     def backward(self):
         # implicit gradient creation
-        self._backward(0, np.ones(self.shape), self)
+        self._backward(np.ones(self.shape))
         
     def operation(expr):
         def wrapper(self, *args, **kwargs):
@@ -119,15 +114,36 @@ class Tensor(object):
         return wrapper
 
     def binary_operation(expr):
+
+        def unbroadcast(backward):
+            def wrapper(dv, x, y):
+                def generator():
+                    for grad, shape in zip(backward(dv, x, y), (y.shape, x.shape)):
+                        if shape < grad.shape:
+                            fill = shape[-1] if shape else None
+                            yield grad.sum(axis=tuple(idx for idx, (a,b) in \
+                                enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
+                        else:
+                            yield grad
+                
+                return tuple(generator())
+            return wrapper
+
+        def propagate(backward, operand):
+            def wrapper(*args):
+                dy, dx = backward(*args)
+                operand._backward(dy)
+                return dx
+            return wrapper
+
         def wrapper(self, operand, **kwargs):
+            def expr_wrapper(**kwargs):
+                forward, backward = expr(**kwargs)
+                # unbroadcast results from backward pass and
+                # propagate back on operand
+                return forward, propagate(unbroadcast(backward), operand)
             args = self.val, operand.val
-
-            # propagate back on operand with parent=self as argument
-            self.arguments.append((self,))
-            self.backward_fxns.append(operand._backward)
-
-            # unbroadcast results from backward pass
-            return Tensor.operation(Tensor.unbroadcast(expr))(self, *args, **kwargs)
+            return Tensor.operation(expr_wrapper)(self, *args, **kwargs)
         return wrapper
 
     def abstract_operation(expr):
@@ -145,28 +161,6 @@ class Tensor(object):
     operation.binary = binary_operation
     operation.abstract = abstract_operation
 
-    @staticmethod
-    def unbroadcast(expr):
-        def expr_wrapper(**kwargs):
-            forward, backward = expr(**kwargs)
-            return forward, backward_wrapper(backward)
-
-        def backward_wrapper(backward):
-            def _wrapper(dv, x, y):
-                def generator():
-                    for grad, shape in zip(backward(dv, x, y), (y.shape, x.shape)):
-                        if shape < grad.shape:
-                            fill = shape[-1] if shape else None
-                            yield grad.sum(axis=tuple(idx for idx, (a,b) in \
-                                enumerate(it.zip_longest(grad.shape, shape, fillvalue=fill)) if a!=b)).reshape(shape)
-                        else:
-                            yield grad
-                
-                return tuple(generator())
-            return _wrapper
-
-        return expr_wrapper
-
     # ========== unary ops ==========
 
     @operation.unary
@@ -176,7 +170,7 @@ class Tensor(object):
             return np.maximum(x, 0)
 
         def backward(dv, x):
-            return dv * (x >= 0),
+            return dv * (x >= 0)
         
         return forward, backward
 
@@ -191,7 +185,7 @@ class Tensor(object):
         def backward(dv, x):
             if x.ndim > dv.ndim:
                 dv = np.expand_dims(dv, -1)
-            return dv + np.zeros_like(x), # use broadcasting to extend array
+            return dv + np.zeros_like(x) # use broadcasting to extend array
 
         return forward, backward
     
@@ -202,7 +196,7 @@ class Tensor(object):
             return np.exp(x)
 
         def backward(dv, x):
-            return dv * np.exp(x),
+            return dv * np.exp(x)
 
         return forward, backward
 
@@ -213,7 +207,7 @@ class Tensor(object):
             return np.log(x)
 
         def backward(dv, x):
-            return dv / x,
+            return dv / x
 
         return forward, backward
 
@@ -227,7 +221,7 @@ class Tensor(object):
             idx = tuple(np.argwhere(x == x.max(**kwargs))[0])
             mask = np.zeros_like(x)
             mask[idx] = 1
-            return mask*dv,
+            return mask*dv
 
         return forward, backward
 
@@ -353,11 +347,10 @@ class Tensor(object):
             else:
                 for N, cout, *i in np.ndindex(*out_shape):
                     grad = kernel_backward(dv[(N, cout, *i)], x_ws[(N, cout, *i)])
-                    # accumulate gradients
-                    for tot_grad, grad in zip((dx_ws[(N, cout, *i)],), grad):
-                        tot_grad += grad
+                    # accumulate gradient
+                    dx_ws[(N, cout, *i)] += grad 
 
-                return dx,
+                return dx
 
         return forward, backward
 
@@ -406,7 +399,7 @@ class Tensor(object):
         def fork_backward(dv):
             nonlocal dv_fork
             dv_fork = dv
-            return dv,
+            return dv
 
         fork = Tensor(self.val)
         fork.backward_fxns.append(fork_backward)
@@ -415,7 +408,7 @@ class Tensor(object):
         def parent_backward(dv):
             nonlocal dv_fork
             assert dv_fork is not None
-            return dv + dv_fork, # accumulate parent gradient
+            return dv + dv_fork # accumulate parent gradient
 
         self.backward_fxns.append(parent_backward)
         self.arguments.append(tuple()) # empty args
