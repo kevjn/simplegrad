@@ -185,7 +185,7 @@ class Tensor(object):
         def backward(dv, x):
             if x.ndim > dv.ndim:
                 dv = np.expand_dims(dv, -1)
-            return dv + np.zeros_like(x) # use broadcasting to extend array
+            return np.broadcast_to(dv, x.shape)
 
         return forward, backward
     
