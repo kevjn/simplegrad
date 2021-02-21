@@ -274,16 +274,17 @@ class Tensor(object):
     # ========== processing ops ==========
 
     @operation.binary
-    def dot(f_subscripts='i...j,j...h->i...h', 
-            b_subscripts=('j...i,j...h->i...h','i...j,h...j->i...h')):
+    def dot(subscripts='i...j,j...h->i...h'):
+        input_subs, output_subs = subscripts.split('->')
+        x_subs, y_subs = input_subs.split(',')
 
         def forward(x, y):
-            return np.einsum(f_subscripts,x,y)
-            return x @ y
+            return np.einsum(subscripts,x,y)
         
         def backward(dv, x, y):
-            return *it.starmap(np.einsum, zip(b_subscripts, (x,dv), (dv,y))),
-            return x.T @ dv, y.T @ dv
+            dx = np.einsum(f"{output_subs},{y_subs}->{x_subs}", dv, y)
+            dy = np.einsum(f"{output_subs},{x_subs}->{y_subs}", dv, x)
+            return dy, dx
 
         return forward, backward
 
@@ -329,11 +330,6 @@ class Tensor(object):
             dx_ws = np.lib.stride_tricks.as_strided(dx, shape=x_ws.shape, strides=x_ws.strides)
 
             if operand is not None:
-                # sparse matrix for each element in dv for binary operations
-                a = np.zeros(out_shape + kernel_size[:1] + ws.shape[-1:])
-                np.einsum('...ii->...i', a)[:] = dv[...,None] 
-                dv = a
-
                 dw = np.zeros_like(operand, dtype='float64')
 
                 for N, cout, *i in np.ndindex(*out_shape):
@@ -377,8 +373,8 @@ class Tensor(object):
         return self.sum(axis=-1, keepdims=True).div(a)
 
     def conv2d(self, w, padding=0, strides=1):
-        return self.sliding_window(self.dot, w, f_subscripts='...ijk,...ijk->...', \
-        b_subscripts=('i...j,h...j->i...h', 'i...j,h...j->h...i'), kernel_size=w.shape[-2:], stride=1)
+        return self.sliding_window(self.dot, w, \
+            subscripts='...ijk,...ijk->...', kernel_size=w.shape[-2:], stride=1)
 
     def sigmoid(self):
         return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))

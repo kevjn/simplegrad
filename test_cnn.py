@@ -16,9 +16,8 @@ def test_simple_conv1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    # conv1d_s.sliding_window(conv1d_s.dot, param_s, f_subscripts='...i,...i->...', kernel_size=(2,), stride=1).sum()
-    conv1d_s.sliding_window(conv1d_s.dot, param_s, f_subscripts='...i,...i->...', \
-    b_subscripts=('i...j,h...j->i...h', 'i...j,h...j->h...i'), kernel_size=(2,), stride=1).sum()
+    conv1d_s.sliding_window(conv1d_s.dot, param_s, subscripts='...i,...i->...', 
+                            kernel_size=(2,), stride=1).sum()
     conv1d_s.backward()
 
     assert np.allclose(a.detach().numpy(), conv1d_s.val)
@@ -77,7 +76,7 @@ def test_simple_conv2d():
 
 def test_conv2d():
     image  = np.random.ranf([10, 16, 20, 40]) # N, in_channels, Hin, Win
-    # image = np.random.ranf([20, 16, 50, 100]) # TODO: this raises numpy.core._exceptions._ArrayMemoryError
+    # image = np.random.ranf([20, 16, 50, 100])
     filter = np.random.ranf([20, 16, 3, 3]) # out_channels, in_channels, kernel_size[0], kernel_size[1]
 
     # ===== pytorch =====
@@ -173,8 +172,7 @@ def test_simple_conv1d_maxpool1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    conv1d_s.sliding_window(conv1d_s.dot, param_s, f_subscripts='...i,...i->...', \
-    b_subscripts=('i...j,h...j->i...h', 'i...j,h...j->h...i'), kernel_size=(3,), stride=1)
+    conv1d_s.sliding_window(conv1d_s.dot, param_s, subscripts='...i,...i->...', kernel_size=(3,), stride=1)
     maxpool1d_s = conv1d_s.sliding_window(conv1d_s.max, kernel_size=(3,), stride=1)
     maxpool1d_s.backward()
 
