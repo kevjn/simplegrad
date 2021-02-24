@@ -147,7 +147,7 @@ def test_maxpool2d():
 
     # ===== simplegrad =====
     maxpool2d = Tensor(image)
-    maxpool2d.sliding_window(maxpool2d.max, kernel_size=(3,3), stride=1).sum()
+    maxpool2d.maxpool2d(kernel_size=(3,3)).sum()
     maxpool2d.backward()
 
     assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.val)

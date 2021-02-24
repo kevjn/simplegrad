@@ -372,9 +372,12 @@ class Tensor(object):
         a = Tensor(self.shape[-1])
         return self.sum(axis=-1, keepdims=True).div(a)
 
-    def conv2d(self, w, padding=0, strides=1):
+    def conv2d(self, w, padding=0, stride=1):
         return self.sliding_window(self.dot, w, \
-            subscripts='...ijk,...ijk->...', kernel_size=w.shape[-2:], stride=1)
+            subscripts='...ijk,...ijk->...', kernel_size=w.shape[-2:], stride=stride)
+
+    def maxpool2d(self, kernel_size = (3,3), padding=0, stride=1):
+        return self.sliding_window(self.max, kernel_size=kernel_size, stride=stride)
 
     def sigmoid(self):
         return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))
