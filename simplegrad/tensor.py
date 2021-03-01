@@ -34,30 +34,66 @@ class Device(object):
                 {name : tuple(v) for name, v in ops.items()})
 
         def load(cpu_expr, **kwargs):
-            # fall back on cpu if no implementation exists
-            return *(a or b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
+            # fall back on cpu if no implementation exists, TODO: memoize this
+            return *(a(**kwargs) if a else b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
 
         def opencl_parser(kernel):
-            def wrapper(*args, **kwargs):
-                # must be float32
-                args = (args[0].astype(np.float32),)
+            def cl_read_buffer(x: np.ndarray):
+                return cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
+                            cl.mem_flags.COPY_HOST_PTR, hostbuf=x)
+            def cl_write_buffer(x: np.ndarray):
+                return cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, x.nbytes)
 
-                # allocate input buffer(s)
-                args_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
-                           cl.mem_flags.COPY_HOST_PTR, hostbuf=x) for x in args),
-                
-                # allocate output buffer(s) on device
-                res_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, x.nbytes) for x in args),
+            def kwargs_wrapper(axis=None, **kwargs):
+                def wrapper(*args: typing.Sequence[np.float32]):
+                    if kernel.function_name == 'sum_forward':
+                        # reduction kernel
+                        assert len(args) == 1, "binary reduction not implemented yet"
+                        assert axis is not None
 
-                # call the kernel, leave the local work size (None) to the implementation
-                kernel(Device.GPU.queue, [args[0].size], None, *args_g, *res_g)
+                        x = args[0].astype(np.float32)
 
-                # create numpy array for results and copy from device
-                res = np.empty_like(args[0])
-                cl._enqueue_read_buffer(Device.GPU.queue, *res_g, res).wait()
+                        strides = np.array([xs//x.itemsize for xs in x.strides], dtype=np.int32)
+                        anchored_axes = np.array(list(set(range(x.ndim)) - set([axis])), dtype=np.int32)
+                        global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+                        res = np.empty(global_work_size, dtype=np.float32)
+                        res_strides = np.array([xs//res.itemsize for xs in res.strides], dtype=np.int32)
 
-                return res
-            return wrapper
+                        # Create cl buffers
+                        a_g = cl_read_buffer(x)
+                        strides = cl_read_buffer(strides)
+                        anchored_axes = cl_read_buffer(anchored_axes)
+                        res_g = cl_write_buffer(res)
+                        res_strides = cl_read_buffer(res_strides)
+
+                        kernel(Device.GPU.queue, global_work_size, None, a_g, strides, anchored_axes, 
+                               np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), res_g, res_strides)
+
+                        cl._enqueue_read_buffer(Device.GPU.queue, res_g, res).wait()
+
+                        return res
+
+                    # must be float32
+                    args = *(arg.astype(np.float32) for arg in args),
+
+                    # allocate input buffer(s)
+                    args_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
+                            cl.mem_flags.COPY_HOST_PTR, hostbuf=x) for x in args),
+                    
+                    # allocate output buffer on device
+                    res_g = cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, args[0].nbytes)
+
+                    # call the kernel, leave the local work size (None) to the implementation
+                    kernel(Device.GPU.queue, [args[0].size], None, *args_g, res_g)
+
+                    # create numpy array for results and copy from device
+                    res = np.empty_like(args[0])
+                    cl._enqueue_read_buffer(Device.GPU.queue, res_g, res).wait()
+
+                    return res
+                return wrapper
+            return kwargs_wrapper
+
 
 class Tensor(object):
 
@@ -137,6 +173,7 @@ class Tensor(object):
             return wrapper
 
         def wrapper(self, operand, **kwargs):
+            @functools.wraps(expr)
             def expr_wrapper(**kwargs):
                 forward, backward = expr(**kwargs)
                 # unbroadcast results from backward pass and
