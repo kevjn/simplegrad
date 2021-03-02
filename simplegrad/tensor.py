@@ -3,6 +3,7 @@ import typing
 import itertools as it
 import operator
 import pyopencl as cl
+import pyopencl.array
 from collections import defaultdict
 
 class Device(object):
@@ -10,10 +11,14 @@ class Device(object):
     def load_device(device):
         device()
         Device.load = device.load
+        Device.to_device = device.to_device
 
     def load(cpu_expr, **kwargs):
         # use cpu forward/backward fxn as default
         return cpu_expr(**kwargs) 
+
+    def to_device(x):
+        return np.array(x)
 
     class GPU:
         def __init__(self):
@@ -37,15 +42,12 @@ class Device(object):
             # fall back on cpu if no implementation exists, TODO: memoize this
             return *(a(**kwargs) if a else b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
 
-        def opencl_parser(kernel):
-            def cl_read_buffer(x: np.ndarray):
-                return cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
-                            cl.mem_flags.COPY_HOST_PTR, hostbuf=x)
-            def cl_write_buffer(x: np.ndarray):
-                return cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, x.nbytes)
+        def to_device(x: np.ndarray):
+            return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
 
+        def opencl_parser(kernel):
             def kwargs_wrapper(axis=None, **kwargs):
-                def wrapper(*args: typing.Sequence[np.float32]):
+                def wrapper(*args):
                     if kernel.function_name == 'sum_forward':
                         # reduction kernel
                         assert len(args) == 1, "binary reduction not implemented yet"
@@ -53,42 +55,33 @@ class Device(object):
 
                         x = args[0].astype(np.float32)
 
-                        strides = np.array([xs//x.itemsize for xs in x.strides], dtype=np.int32)
-                        anchored_axes = np.array(list(set(range(x.ndim)) - set([axis])), dtype=np.int32)
-                        global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+                        strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)
+                        strides = cl.array.to_device(Device.GPU.queue, strides)
+
+                        anchored_axes = np.arange(x.ndim, dtype=np.int32)
+                        anchored_axes = np.delete(anchored_axes, axis)
+                        if not anchored_axes.size:
+                            anchored_axes = np.array([axis], dtype=np.int32)
+                            global_work_size = np.array([1], dtype=np.int32)
+                        else:
+                            global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+                        anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
+
                         res = np.empty(global_work_size, dtype=np.float32)
-                        res_strides = np.array([xs//res.itemsize for xs in res.strides], dtype=np.int32)
+                        res = cl.array.to_device(Device.GPU.queue, res)
+                        res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
+                        res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
-                        # Create cl buffers
-                        a_g = cl_read_buffer(x)
-                        strides = cl_read_buffer(strides)
-                        anchored_axes = cl_read_buffer(anchored_axes)
-                        res_g = cl_write_buffer(res)
-                        res_strides = cl_read_buffer(res_strides)
-
-                        kernel(Device.GPU.queue, global_work_size, None, a_g, strides, anchored_axes, 
-                               np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), res_g, res_strides)
-
-                        cl._enqueue_read_buffer(Device.GPU.queue, res_g, res).wait()
+                        kernel(Device.GPU.queue, global_work_size, None, x.data, strides.data, anchored_axes.data, 
+                               np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), res.data, res_strides.data)
 
                         return res
 
-                    # must be float32
-                    args = *(arg.astype(np.float32) for arg in args),
-
-                    # allocate input buffer(s)
-                    args_g = *(cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_ONLY | \
-                            cl.mem_flags.COPY_HOST_PTR, hostbuf=x) for x in args),
-                    
                     # allocate output buffer on device
-                    res_g = cl.Buffer(Device.GPU.ctx, cl.mem_flags.WRITE_ONLY, args[0].nbytes)
+                    res = cl.array.empty_like(args[0])
 
                     # call the kernel, leave the local work size (None) to the implementation
-                    kernel(Device.GPU.queue, [args[0].size], None, *args_g, res_g)
-
-                    # create numpy array for results and copy from device
-                    res = np.empty_like(args[0])
-                    cl._enqueue_read_buffer(Device.GPU.queue, res_g, res).wait()
+                    kernel(Device.GPU.queue, [args[0].size], None, *(a.data for a in args), res.data)
 
                     return res
                 return wrapper
@@ -99,7 +92,7 @@ class Tensor(object):
 
     def __init__(self, value):
         self.debug = ""
-        self.val = np.array(value)
+        self.val = Device.to_device(value)
         self.grad = 0
 
         self.backward_fxns = [] 
