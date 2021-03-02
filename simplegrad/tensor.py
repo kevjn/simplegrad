@@ -258,17 +258,6 @@ class Tensor(object):
     # ========== binary ops ==========
 
     @operation.binary
-    def sub():
-
-        def forward(x,y):
-            return x-y
-
-        def backward(dv, x, y):
-            return -dv, dv
-
-        return forward, backward
-
-    @operation.binary
     def pow():
 
         def forward(x, y):
@@ -386,6 +375,9 @@ class Tensor(object):
         assert isinstance(x, type(self))
         return self.mul(x.pow(Tensor(-1.0)))
 
+    def sub(self, x):
+        return self.add(x.mul(Tensor(-1)))
+
     def softmax(self):
         _max = self.fork().max(axis=-1, keepdims=True)
         self.sub(_max).exp()
@@ -394,7 +386,7 @@ class Tensor(object):
 
     def logsoftmax(self):
         _max = self.fork().max(axis=-1, keepdims=True)
-        _sub = self.fork().sub(_max).exp().sum(axis=-1, keepdims=True).log()
+        _sub = self.fork().sub(_max.fork()).exp().sum(axis=-1, keepdims=True).log()
         _max.add(_sub)
         return self.sub(_max)
 
