@@ -144,18 +144,15 @@ class Tensor(object):
 
     def binary_operation(expr):
         def unbroadcast(backward):
+            def reduce(grad, shape):
+                if shape >= grad.shape: 
+                    return grad
+                _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
+                idx = np.not_equal(grad.shape, _shape)
+                axes = *np.arange(grad.ndim)[idx],
+                return grad.sum(axis=axes).reshape(shape)
             def wrapper(dv, x, y):
-                def generator():
-                    for grad, shape in zip(backward(dv, x, y), (y.shape, x.shape)):
-                        if shape < grad.shape:
-                            fill = shape and shape[-1] or None
-                            axis = tuple(i for i, (a,b) in enumerate(it.zip_longest
-                                        (grad.shape, shape, fillvalue=fill)) if a!=b)
-                            yield grad.sum(axis=axis).reshape(shape)
-                        else:
-                            yield grad
-                
-                return *generator(),
+                return *it.starmap(reduce, zip(backward(dv, x, y), (y.shape, x.shape))),
             return wrapper
 
         def propagate(backward, operand):
