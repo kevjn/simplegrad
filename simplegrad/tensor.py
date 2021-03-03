@@ -12,6 +12,8 @@ class Device(object):
         device()
         Device.load = device.load
         Device.to_device = device.to_device
+        # argument parser
+        Device.Parser = device.Parser
 
     def load(cpu_expr, **kwargs):
         # use cpu forward/backward fxn as default
@@ -19,6 +21,13 @@ class Device(object):
 
     def to_device(x):
         return np.array(x)
+
+    class Parser(object):
+        def default(*args, **kwargs):
+            return args
+
+        def reduction(*args, **kwargs):
+            return args
 
     class GPU:
         def __init__(self):
@@ -32,7 +41,7 @@ class Device(object):
                 tokens = kernel.function_name.split("_")
                 assert len(tokens) == 2
                 name, direction = tokens
-                ops[name][direction != "forward"] = Device.GPU.opencl_parser(kernel)
+                ops[name][direction != "forward"] = Device.GPU.kernel_wrapper(kernel)
 
             # freeze dictionary values
             Device.GPU.ops = defaultdict(lambda: (None, None), \
@@ -40,52 +49,51 @@ class Device(object):
 
         def load(cpu_expr, **kwargs):
             # fall back on cpu if no implementation exists, TODO: memoize this
-            return *(a(**kwargs) if a else b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
+            return *(a or b for a,b in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs))),
 
         def to_device(x: np.ndarray):
             return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
 
-        def opencl_parser(kernel):
-            def kwargs_wrapper(axis=None, **kwargs):
-                def wrapper(*args):
-                    if kernel.function_name == 'sum_forward':
-                        # reduction kernel
-                        assert len(args) == 1, "binary reduction not implemented yet"
-                        assert axis is not None
+        class Parser(object):
 
-                        x = args[0].astype(np.float32)
+            def default(*args, **kwargs):
+                # allocate output buffer on device
+                res = cl.array.empty_like(args[0])
+                return [args[0].size], None, res, *(a.data for a in args), res.data
 
-                        strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)
-                        strides = cl.array.to_device(Device.GPU.queue, strides)
+            def reduction(*args, axis=None, **kwargs):
+                assert len(args) == 1, "binary reduction not implemented yet"
+                assert axis is not None
 
-                        anchored_axes = np.arange(x.ndim, dtype=np.int32)
-                        anchored_axes = np.delete(anchored_axes, axis)
-                        if not anchored_axes.size:
-                            anchored_axes = np.array([axis], dtype=np.int32)
-                            global_work_size = np.array([1], dtype=np.int32)
-                        else:
-                            global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
-                        anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
+                x = args[0].astype(np.float32)
 
-                        res = np.empty(global_work_size, dtype=np.float32)
-                        res = cl.array.to_device(Device.GPU.queue, res)
-                        res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
-                        res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
+                strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)
+                strides = cl.array.to_device(Device.GPU.queue, strides)
 
-                        kernel(Device.GPU.queue, global_work_size, None, x.data, strides.data, anchored_axes.data, 
-                               np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), res.data, res_strides.data)
+                anchored_axes = np.arange(x.ndim, dtype=np.int32)
+                anchored_axes = np.delete(anchored_axes, axis)
+                if not anchored_axes.size:
+                    anchored_axes = np.array([axis], dtype=np.int32)
+                    global_work_size = np.array([1], dtype=np.int32)
+                else:
+                    global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+                anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
 
-                        return res
+                res = np.empty(global_work_size, dtype=np.float32)
+                res = cl.array.to_device(Device.GPU.queue, res)
+                res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
+                res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
-                    # allocate output buffer on device
-                    res = cl.array.empty_like(args[0])
+                return global_work_size, None, res, x.data, strides.data, anchored_axes.data, \
+                        np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), \
+                        res.data, res_strides.data
 
-                    # call the kernel, leave the local work size (None) to the implementation
-                    kernel(Device.GPU.queue, [args[0].size], None, *(a.data for a in args), res.data)
-
-                    return res
-                return wrapper
-            return kwargs_wrapper
+        def kernel_wrapper(kernel):
+            def wrapper(global_work_size, local_work_size, res, *args):
+                # call the kernel
+                kernel(Device.GPU.queue, global_work_size, local_work_size, *args)
+                return res
+            return wrapper
 
 
 class Tensor(object):
@@ -119,17 +127,17 @@ class Tensor(object):
 
     def backward(self):
         # implicit gradient creation
-        self._backward(np.ones(self.shape))
+        self._backward(Device.to_device(np.ones(self.shape)))
         
     def operation(expr):
-        def wrapper(self, *args, **kwargs):
+        def wrapper(self, *args, parser=Device.Parser.default, **kwargs):
             forward, backward = Device.load(expr, **kwargs)
 
             # save intermediate variables for backward pass
             self.arguments.append(args)
             self.backward_fxns.append(backward)
 
-            self.val = forward(*args)
+            self.val = forward(*parser(*args, **kwargs))
 
             return self
         return wrapper
@@ -140,6 +148,11 @@ class Tensor(object):
             args = self.val, 
 
             return Tensor.operation(expr)(self, *args, **kwargs)
+        return wrapper
+
+    def unary_reduction_operation(expr):
+        def wrapper(self, *args, **kwargs):
+            return Tensor.unary_operation(expr)(self, *args, parser=Device.Parser.reduction, **kwargs)
         return wrapper
 
     def binary_operation(expr):
@@ -185,6 +198,7 @@ class Tensor(object):
         return wrapper
 
     operation.unary = unary_operation
+    operation.unary.reduction = unary_reduction_operation
     operation.binary = binary_operation
     operation.abstract = abstract_operation
 
@@ -202,12 +216,11 @@ class Tensor(object):
         return forward, backward
 
     # ========== reduce ops ==========
-
-    @operation.unary
-    def sum(**np_kwargs):
+    @operation.unary.reduction
+    def sum(axis=None, keepdims=False):
 
         def forward(x):
-            return np.sum(x, **np_kwargs)
+            return np.sum(x, axis=axis, keepdims=keepdims)
         
         def backward(dv, x):
             if x.ndim > dv.ndim:
