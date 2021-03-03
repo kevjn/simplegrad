@@ -156,8 +156,8 @@ class Tensor(object):
             return wrapper
 
         def propagate(backward, operand):
-            def wrapper(*args):
-                dy, dx = backward(*args)
+            def wrapper(dv, x, y):
+                dy, dx = backward(dv, x, y)
                 operand._backward(dy)
                 return dx
             return wrapper
