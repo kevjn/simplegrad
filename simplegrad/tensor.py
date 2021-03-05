@@ -70,6 +70,20 @@ class Device(object):
                 res = cl.array.empty_like(args[0])
                 return [args[0].size], None, res, *(a.data for a in args), res.data
 
+            def binary(x, y, **kwargs):
+                shapes_padded = it.zip_longest(x.shape[::-1], y.shape[::-1], fillvalue=0)
+                res = cl.array.empty(Device.GPU.queue, tuple(it.starmap(max, shapes_padded))[::-1], np.float32)
+
+                res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
+
+                xstrides = (np.equal(np.pad(x.shape, (len(res.shape)-len(x.shape),0)), res.shape) * np.pad(x.strides, (len(res.shape)-len(x.shape),0)) // 4).astype(np.int32)
+                xstrides = cl.array.to_device(Device.GPU.queue, xstrides)
+
+                ystrides = (np.equal(np.pad(y.shape, (len(res.shape)-len(y.shape),0)), res.shape) * np.pad(y.strides, (len(res.shape)-len(y.shape),0)) // 4).astype(np.int32)
+                ystrides = cl.array.to_device(Device.GPU.queue, ystrides)
+
+                return res.shape, None, res, x.data, xstrides.data, y.data, ystrides.data, res.data, np.int32(res.ndim), res_strides.data
+
             def reduction(*args, axis=None, **kwargs):
                 assert len(args) == 1, "binary reduction not implemented yet"
                 assert axis is not None
