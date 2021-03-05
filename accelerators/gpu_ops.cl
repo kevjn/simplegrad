@@ -13,12 +13,24 @@ __kernel void relu_backward(__global const float *dv_g, __global const float *a_
   res_g[gid] = dv * (a >= 0);
 }
 
-__kernel void add_forward(__global const float *a_g, __global const float *b_g, __global float *res_g)
+__kernel void add_forward(__global const float *x_g,
+                          __global const int* x_strides,
+                          __global const float *y_g, 
+                          __global const int* y_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
 {
-  int gid = get_global_id(0);
-  float a = a_g[gid];
-  float b = b_g[gid];
-  res_g[gid] = a + b;
+  int i = 0, ix = 0, iy = 0;
+  //iterate over trailing axes, the stride for non-trailing axes is set to 0 on host.
+  for(int dim = 0; dim < res_dims; dim++)
+  {
+    i += get_global_id(dim) * res_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  res_g[i] = x_g[ix] + y_g[iy];
 }
 
 //-------------------------------------------------------------------------------
