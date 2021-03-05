@@ -1,5 +1,6 @@
 import numpy as np
 from simplegrad.tensor import Device, Tensor
+import torch
 
 np.random.seed(1337)
 Device.load_device(Device.GPU)
@@ -16,6 +17,11 @@ def equal_sum_over_all_axes(arr):
         res_gpu = a.sum(axis=0)
     res_gpu = res_gpu.val
     return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
+
+def equal_add(a: np.ndarray, b: np.ndarray):
+    tensor_pytorch = torch.tensor(a).add(torch.tensor(b))
+    tensor_simplegrad = Tensor(a).add(Tensor(b))
+    return np.allclose(tensor_simplegrad.val.get(), tensor_pytorch.data.numpy())
 
 def test_sum_reduction_kernel():
     a = np.random.randn(10,100,60,5).astype(np.float32)
@@ -34,39 +40,25 @@ def test_broadcasting_add():
                [30.0, 30.0, 30.0]])
 
     b = np.array([1.0, 2.0, 3.0])
-
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
 
     a = np.array([0.0, 10.0, 20.0, 30.0])
     a = a[:, np.newaxis]
     b = np.array([1.0, 2.0, 3.0])
-
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
 
     a = np.random.randn(5,5,5)
     b = np.random.randn(5,5)
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
 
     a = np.random.randn(5,5)
     b = np.random.randn(5,5,5)
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
 
     a = np.random.randn(3, 1, 2)
     b = np.random.randn(3, 1)
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
 
     a = np.random.randn(3, 4)
     b = np.random.randn(2, 3, 4)
-    tensor_p = (torch.tensor(a)).add(torch.tensor(b))
-    tensor = Tensor(a).add(Tensor(b))
-    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert equal_add(a, b)
