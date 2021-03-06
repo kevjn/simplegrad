@@ -11,6 +11,7 @@ class Device(object):
     def load_device(device):
         device()
         Device.load = device.load
+        Device.load_directly = device.load_directly
         Device.to_device = device.to_device
         # argument parser
         Device.Parser = device.Parser
@@ -18,6 +19,11 @@ class Device(object):
     def load(cpu_expr, *parsers, **kwargs):
         # use cpu forward/backward fxn as default
         return cpu_expr(**kwargs) 
+
+    def load_directly(name, parser, backward=False, **kwargs):
+        # get unwrapped function
+        f = getattr(Tensor, name).__wrapped__
+        return f(**kwargs)[backward]
 
     def to_device(x):
         return np.array(x)
@@ -60,6 +66,9 @@ class Device(object):
             return *(Device.operation_wrapper(a or b, a and parser or Device.CPU.Parser.default, **kwargs) \
                 for a,b,parser in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs), parsers)),
 
+        def load_directly(name, parser, backward=False, **kwargs):
+            return Device.operation_wrapper(Device.GPU.ops[name][backward], parser, **kwargs)
+
         def to_device(x: np.ndarray):
             return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
 
@@ -83,11 +92,15 @@ class Device(object):
                             np.pad(y.strides, (len(res.shape)-len(y.shape),0)) // 4).astype(np.int32)
                 ystrides = cl.array.to_device(Device.GPU.queue, ystrides)
 
-                return res.shape, None, res, x.data, xstrides.data, y.data, ystrides.data, res.data, np.int32(res.ndim), res_strides.data
+                return res.shape, None, res, x.data, xstrides.data, y.data, ystrides.data, \
+                        res.data, np.int32(res.ndim), res_strides.data
 
             def reduction(*args, axis=None, **kwargs):
                 assert len(args) == 1, "binary reduction not implemented yet"
                 assert axis is not None
+                if type(axis) is tuple:
+                    assert len(axis) == 1, "reduction over multiple axes not implemented yet"
+                    axis = axis[0]
 
                 x = args[0].astype(np.float32)
 
@@ -154,6 +167,7 @@ class Tensor(object):
         self._backward(Device.to_device(np.ones(self.shape)))
         
     def operation(expr):
+        @functools.wraps(expr)
         def wrapper(self, *args, parsers=(Device.Parser.default,)*2, **kwargs):
             forward, backward = Device.load(expr, *parsers, **kwargs)
 
@@ -167,6 +181,7 @@ class Tensor(object):
         return wrapper
 
     def unary_operation(expr):
+        @functools.wraps(expr)
         def wrapper(self, *args, **kwargs):
             assert not args, "unary operations can't have positional arguments"
             args = self.val, 
@@ -175,9 +190,10 @@ class Tensor(object):
         return wrapper
 
     def unary_reduction_operation(expr):
+        @functools.wraps(expr)
         def wrapper(self, *args, **kwargs):
             return Tensor.unary_operation(expr)(self, *args, \
-                parsers=(Device.Parser.reduction, Device.Parser.default), **kwargs)
+                parsers=(Device.Parser.reduction, Device.Parser.binary), **kwargs)
         return wrapper
 
     def binary_operation(expr):
@@ -188,7 +204,7 @@ class Tensor(object):
                 _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
                 idx = np.not_equal(grad.shape, _shape)
                 axes = *np.arange(grad.ndim)[idx],
-                return grad.sum(axis=axes).reshape(shape)
+                return Device.load_directly("sum", Device.Parser.reduction, axis=axes)(grad).reshape(shape)
             def wrapper(dv, x, y):
                 return *it.starmap(reduce, zip(backward(dv, x, y), (y.shape, x.shape))),
             return wrapper
