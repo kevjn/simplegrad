@@ -54,7 +54,7 @@ __kernel void add_forward(__global const float *x_g,
 //         __const int result_ndims: result dimension (this might be same as get_global_size(0))
 //
 //  output: __global float* result: the output array
-//         __global const int* reult_strides: strides for the output array (float aligned)
+//          __global const int* reult_strides: strides for the output array (float aligned)
 
 __kernel
 void sum_forward(__global const float* buffer,
@@ -85,4 +85,22 @@ void sum_forward(__global const float* buffer,
     idx += get_global_id(ax) * result_strides[ax];
   }
   result[idx] = accum;
+}
+
+__kernel void sum_backward(__global const float *dv_g,
+                          __global const int* dv_strides,
+                          __global const float *x_g, 
+                          __global const int* x_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  // broadcast dv
+  int i = 0, idv = 0;
+  for(int dim = 0; dim < res_dims; dim++)
+  {
+    i += get_global_id(dim) * res_strides[dim];
+    idv += get_global_id(dim) * dv_strides[dim];
+  }
+  res_g[i] = dv_g[idv];
 }
