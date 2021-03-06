@@ -62,3 +62,16 @@ def test_broadcasting_add():
     a = np.random.randn(3, 4)
     b = np.random.randn(2, 3, 4)
     assert equal_add(a, b)
+
+def test_simple_backward_with_broadcasting():
+    a = np.random.randn(10,10)
+    w = np.random.randn(10,10,10)
+
+    tensor_p = (t_p := torch.tensor(a, requires_grad=True)).add(w_p := torch.tensor(w, requires_grad=True)).relu().sum(axis=0).sum(axis=0).sum(axis=0)
+    tensor_p.backward()
+    tensor = Tensor(a).add(w_s := Tensor(w)).relu().sum(axis=0).sum(axis=0).sum(axis=0)
+    tensor.backward()
+
+    assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
+    assert np.allclose(tensor.grad.get(), t_p.grad.data.numpy())
+    assert np.allclose(w_s.grad.get(), w_p.grad.data.numpy())
