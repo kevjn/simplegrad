@@ -38,9 +38,7 @@ class Device(object):
             def default(*args, **kwargs):
                 return args
 
-        Parser.reduction = Parser.default
-        Parser.binary = Parser.default
-        Parser.expansion = Parser.default
+        Parser.reduction = Parser.binary = Parser.default
     Parser = CPU.Parser
 
     class GPU:
