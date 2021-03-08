@@ -348,6 +348,9 @@ class Tensor(object):
             return np.einsum(subscripts,x,y)
         
         def backward(dv, x, y):
+            assert set(x_subs) <= (set(output_subs) | set(y_subs)), "Tiling (?) not implemented"
+            assert set(y_subs) <= (set(output_subs) | set(x_subs))
+
             dx = np.einsum(f"{output_subs},{y_subs}->{x_subs}", dv, y)
             dy = np.einsum(f"{output_subs},{x_subs}->{y_subs}", dv, x)
             return dy, dx
