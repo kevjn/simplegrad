@@ -317,17 +317,6 @@ class Tensor(object):
         return forward, backward
 
     @operation.binary
-    def mul():
-
-        def forward(x, y):
-            return x * y
-
-        def backward(dv, x, y):
-            return dv * x, dv * y
-
-        return forward, backward
-
-    @operation.binary
     def add():
         def forward(x, y):
             return x + y
@@ -391,6 +380,9 @@ class Tensor(object):
     def div(self, x):
         assert isinstance(x, type(self))
         return self.mul(x.pow(Tensor(-1.0)))
+
+    def mul(self, x):
+        return self.dot(x, subscripts="...,...->...")
 
     def sub(self, x):
         return self.add(x.mul(Tensor(-1)))
