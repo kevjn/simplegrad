@@ -226,21 +226,9 @@ class Tensor(object):
                 parsers=(Device.Parser.binary,)*2, **kwargs)
         return wrapper
 
-    def abstract_operation(expr):
-        def wrapper(self, fxn, *args, **kwargs):
-            derived_expr = fxn.__func__.__closure__[0].cell_contents
-            base_expr = functools.partial(expr, derived_expr, **kwargs)
-            # swap wrapper
-            fxn.__func__.__closure__[0].cell_contents = base_expr
-            # call correct operation type
-            fxn(*args)
-            return self
-        return wrapper
-
     operation.unary = unary_operation
     operation.unary.reduction = unary_reduction_operation
     operation.binary = binary_operation
-    operation.abstract = abstract_operation
 
     # ========== unary ops ==========
 
@@ -357,14 +345,11 @@ class Tensor(object):
 
         return forward, backward
 
-    # ========== abstract ops ==========
-
-    @operation.abstract
-    def sliding_window(kernel_fxn, kernel_size=(2,2), stride=1, **kwargs):
-        kernel_forward, kernel_backward = kernel_fxn(**kwargs)
+    @operation.unary
+    def window_view(kernel_size=(2,2), stride=1):
         ws = None # windows
 
-        def forward(x, operand=None):
+        def forward(x):
             nonlocal ws
             N, cin, *in_shape, kdims = *x.shape, len(kernel_size)
 
@@ -373,49 +358,19 @@ class Tensor(object):
             out_shape = N, cin, *truncated_out_shape, *kernel_size
             out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
 
-            # get windows
-            ws = np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
-
-            if operand is not None:
-                cout = operand.shape[0]
-                # init truncated output and set each element
-                out = np.zeros((N, cout, *truncated_out_shape))
-                for N, cout, *i in np.ndindex(out.shape):
-                    out[(N, cout, *i)] = kernel_forward(ws[(N, slice(None), *i)], operand[cout])
-            else:
-                cout = cin
-                out = np.zeros((N, cout, *truncated_out_shape))
-                for N, cout, *i in np.ndindex(out.shape):
-                    out[(N, cout, *i)] = kernel_forward(ws[(N, cout, *i)])
-
-            return out
+            # return window view
+            return (ws := np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides))
         
-        def backward(dv, x, operand=None):
+        def backward(dv, x):
             nonlocal ws
-            out_shape = dv.shape
+            assert dv.shape == ws.shape
+            ws[:] = 0
+            # can this be vectorized?
+            for i in np.ndindex(ws.shape):
+                # accumulate gradient
+                ws[i] += dv[i]
 
-            x_ws = ws
-            dx = np.zeros_like(x, dtype='float64')
-            dx_ws = np.lib.stride_tricks.as_strided(dx, shape=x_ws.shape, strides=x_ws.strides)
-
-            if operand is not None:
-                dw = np.zeros_like(operand, dtype='float64')
-
-                for N, cout, *i in np.ndindex(*out_shape):
-                    grad = kernel_backward(dv[(N, cout, *i)], \
-                            x_ws[(N, slice(None), *i)], operand[cout])
-                    # accumulate gradients
-                    for tot_grad, grad in zip((dw[cout], dx_ws[(N, slice(None), *i)]), grad):
-                        tot_grad += grad
-
-                return dw, dx
-            else:
-                for N, cout, *i in np.ndindex(*out_shape):
-                    grad = kernel_backward(dv[(N, cout, *i)], x_ws[(N, cout, *i)])
-                    # accumulate gradient
-                    dx_ws[(N, cout, *i)] += grad 
-
-                return dx
+            return x
 
         return forward, backward
 
@@ -445,11 +400,12 @@ class Tensor(object):
         return self.sum(axis=-1, keepdims=True).div(a)
 
     def conv2d(self, w, padding=0, stride=1):
-        return self.sliding_window(self.dot, w, \
-            subscripts='...ijk,...ijk->...', kernel_size=w.shape[-2:], stride=stride)
+        assert len(self.shape) == len(w.shape) == 4
+        return self.window_view(kernel_size=w.shape[-2:], stride=stride)\
+            .dot(w, subscripts='abcdef,gbef->agcd')
 
     def maxpool2d(self, kernel_size = (3,3), padding=0, stride=1):
-        return self.sliding_window(self.max, kernel_size=kernel_size, stride=stride)
+        return self.window_view(kernel_size=kernel_size, stride=stride).max(axis=(-1, -2))
 
     def sigmoid(self):
         return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))
