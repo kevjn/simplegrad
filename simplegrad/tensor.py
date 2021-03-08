@@ -280,13 +280,22 @@ class Tensor(object):
         return forward, backward
 
     @operation.unary
-    def max(**kwargs):
+    def max(axis=None, keepdims=False):
 
         def forward(x):
-            return np.max(x, **kwargs)
+            return np.max(x, axis=axis, keepdims=keepdims)
         
         def backward(dv, x):
-            idx = tuple(np.argwhere(x == x.max(**kwargs))[0])
+            if axis:
+                area = np.prod(np.take(x.shape, axis))
+                xr = x.reshape(-1, area)
+                idx = xr.argmax(1)
+                mask = np.zeros_like(xr)
+                np.put_along_axis(mask, idx[:, None], 1, axis=-1)
+                mask = mask * dv.reshape(mask.shape[0], 1)
+                return mask.reshape(x.shape)
+
+            idx = tuple(np.argwhere(x == x.max())[0])
             mask = np.zeros_like(x)
             mask[idx] = 1
             return mask*dv
