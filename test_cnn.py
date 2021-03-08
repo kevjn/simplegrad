@@ -16,8 +16,7 @@ def test_simple_conv1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    conv1d_s.sliding_window(conv1d_s.dot, param_s, subscripts='...i,...i->...', 
-                            kernel_size=(2,), stride=1).sum()
+    conv1d_s.window_view(kernel_size=(2,), stride=1).dot(param_s, subscripts='abcd,abd->abc').sum()
     conv1d_s.backward()
 
     assert np.allclose(a.detach().numpy(), conv1d_s.val)
@@ -99,7 +98,7 @@ def test_simple_maxpool1d():
 
     # ===== simplegrad =====
     maxpool1d = Tensor(input_1d)
-    maxpool1d.sliding_window(maxpool1d.max, kernel_size=(3,), stride=1).sum()
+    maxpool1d.window_view(kernel_size=(3,), stride=1).max(axis=-1).sum()
     maxpool1d.backward()
 
     # ===== pytorch =====
@@ -109,6 +108,7 @@ def test_simple_maxpool1d():
     maxpool1d_p = maxpool1d_p(input_1d).sum()
     maxpool1d_p.backward()
 
+    assert np.allclose(maxpool1d_p.data.numpy(), maxpool1d.val)
     assert np.allclose(input_1d.grad, maxpool1d.grad)
 
 def test_simple_maxpool2d():
@@ -131,9 +131,10 @@ def test_simple_maxpool2d():
 
         # ===== simplegrad =====
         maxpool2d = Tensor(_x)
-        maxpool2d.sliding_window(maxpool2d.max, kernel_size=(3,3), stride=1).sum()
+        maxpool2d.maxpool2d(kernel_size=(3,3)).sum()
         maxpool2d.backward()
 
+        assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.val)
         assert np.allclose(maxpool2d.grad, x.grad)
 
 def test_maxpool2d():
@@ -172,8 +173,8 @@ def test_simple_conv1d_maxpool1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    conv1d_s.sliding_window(conv1d_s.dot, param_s, subscripts='...i,...i->...', kernel_size=(3,), stride=1)
-    maxpool1d_s = conv1d_s.sliding_window(conv1d_s.max, kernel_size=(3,), stride=1)
+    conv1d_s.window_view(kernel_size=(3,), stride=1).dot(param_s, subscripts='abcd,abd->abc')
+    maxpool1d_s = conv1d_s.window_view(kernel_size=(3,), stride=1).max(axis=-1)
     maxpool1d_s.backward()
 
     assert np.allclose(maxpool1d_p.detach().numpy(), maxpool1d_s.val)
