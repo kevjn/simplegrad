@@ -180,3 +180,25 @@ def test_simple_conv1d_maxpool1d():
     assert np.allclose(maxpool1d_p.detach().numpy(), maxpool1d_s.val)
     assert np.allclose(conv1d_p.grad, conv1d_s.grad)
     assert np.allclose(param_p.grad, param_s.grad)
+
+def test_conv2d_maxpool2d():
+    image  = np.random.ranf([10, 16, 20, 40]) # N, in_channels, Hin, Win
+    filter = np.random.ranf([20, 16, 3, 3]) # out_channels, in_channels, kernel_size[0], kernel_size[1]
+
+    # ===== pytorch =====
+    x = torch.tensor(image, requires_grad=True)
+    w0 = torch.tensor(filter, requires_grad=True)
+    a = torch.nn.functional.conv2d(x, w0, padding=0)
+    maxpool2d_p = torch.nn.MaxPool2d((3,3), stride=1)
+    maxpool2d_p = maxpool2d_p(a).sum()
+    maxpool2d_p.backward()
+
+    # ===== simplegrad =====
+    c = Tensor(filter)
+    out_simplegrad = Tensor(image).conv2d(c)
+    out_simplegrad.maxpool2d(kernel_size=(3,3)).sum()
+    out_simplegrad.backward()
+
+    assert np.allclose(maxpool2d_p.detach().numpy(), out_simplegrad.val)
+    assert np.allclose(w0.grad.detach().numpy(), c.grad)
+    assert np.allclose(x.grad.detach().numpy(), out_simplegrad.grad)
