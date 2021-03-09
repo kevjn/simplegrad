@@ -180,11 +180,8 @@ class Tensor(object):
 
     def unary_operation(expr):
         @functools.wraps(expr)
-        def wrapper(self, *args, **kwargs):
-            assert not args, "unary operations can't have positional arguments"
-            args = self.val, 
-
-            return Tensor.operation(expr)(self, *args, **kwargs)
+        def wrapper(self, **kwargs):
+            return Tensor.operation(expr)(self, self.val, **kwargs)
         return wrapper
 
     def unary_reduction_operation(expr):
