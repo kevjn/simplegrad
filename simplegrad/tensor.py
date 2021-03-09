@@ -233,31 +233,6 @@ class Tensor(object):
     # ========== unary ops ==========
 
     @operation.unary
-    def relu():
-
-        def forward(x):
-            return np.maximum(x, 0)
-
-        def backward(dv, x):
-            return dv * (x >= 0)
-        
-        return forward, backward
-
-    # ========== reduce ops ==========
-    @operation.unary.reduction
-    def sum(axis=None, keepdims=False):
-
-        def forward(x):
-            return np.sum(x, axis=axis, keepdims=keepdims)
-        
-        def backward(dv, x):
-            if x.ndim > dv.ndim:
-                dv = np.expand_dims(dv, -1)
-            return np.broadcast_to(dv, x.shape)
-
-        return forward, backward
-    
-    @operation.unary
     def exp():
 
         def forward(x):
@@ -276,6 +251,21 @@ class Tensor(object):
 
         def backward(dv, x):
             return dv / x
+
+        return forward, backward
+
+    # ========== reduce ops ==========
+
+    @operation.unary.reduction
+    def sum(axis=None, keepdims=False): # TODO: implement this using einsum "ij -> j" will sum along axis=0
+
+        def forward(x):
+            return np.sum(x, axis=axis, keepdims=keepdims)
+        
+        def backward(dv, x):
+            if x.ndim > dv.ndim:
+                dv = np.expand_dims(dv, -1)
+            return np.broadcast_to(dv, x.shape)
 
         return forward, backward
 
@@ -303,6 +293,17 @@ class Tensor(object):
         return forward, backward
 
     # ========== binary ops ==========
+
+    @operation.binary
+    def maximum():
+
+        def forward(x, y):
+            return np.maximum(x, y)
+
+        def backward(dv, x, y):
+            return dv * (x <= y), dv * (x >= y)
+        
+        return forward, backward
 
     @operation.binary
     def pow():
@@ -376,6 +377,9 @@ class Tensor(object):
         return forward, backward
 
     # ========== composite ops ==========
+
+    def relu(self):
+        return self.maximum(Tensor(0))
 
     def div(self, x):
         assert isinstance(x, type(self))
