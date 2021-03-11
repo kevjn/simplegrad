@@ -52,12 +52,8 @@ def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
         return values, attention, q.grad, k.grad, v.grad
     return values, attention
 
-def multi_head_attention_forward_simplegrad(q, k, v, embed_dim, num_heads, q_proj_weight, 
-                                            k_proj_weight, v_proj_weight, out_proj_weight):
-
-        q = q.fork().dot(q_proj_weight, subscripts="ijk,lmk->jlim")
-        k = k.fork().dot(k_proj_weight, subscripts="ijk,lmk->jlim")
-        v = v.fork().dot(v_proj_weight, subscripts="ijk,lmk->jlim")
+def multi_head_attention_forward_simplegrad(q, k, v, embed_dim, num_heads, *proj_weights, out_proj_weight):
+        q, k, v = *(x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], proj_weights)),
 
         output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False)
 
@@ -74,7 +70,7 @@ def test_scaled_dot_product_attention():
         equal_grad = all(np.allclose(t1.data.numpy(), t2) for t1, t2 in zip(grad1, grad2))
         return equal_out and equal_grad
 
-    seq_len, d_k = 3, 2 # Model hyperparameters
+    seq_len, d_k = 3, 2 # data hyperparameters
 
     q = np.random.randn(1, 1, seq_len, d_k)
     k = np.random.randn(1, 1, seq_len, d_k)
@@ -119,6 +115,10 @@ def test_multi_head_self_attention():
 
     out_proj_weight = torch.FloatTensor(embed_dim, embed_dim).uniform_(-np.sqrt(k), np.sqrt(k))
 
+    # requires grad for backprop
+    for weight in (q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight):
+        weight.requires_grad = True
+
     # Compare the two pytorch models
     out_pytorch1, _ = torch.functional.F.multi_head_attention_forward(
                     X, X, X, embed_dim, num_heads, None, None, None, None, False,
@@ -126,7 +126,10 @@ def test_multi_head_self_attention():
                     k_proj_weight = k_proj_weight, v_proj_weight = v_proj_weight,
                     use_separate_proj_weight=True)
 
-    # reshape weights here to make better use of einsum
+    out_pytorch1.sum().backward()
+    pytorch_grad = [w.grad.clone().data.numpy() for w in (q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)]
+
+    # reshape weights here to make better use of einsum (decompose embed_dim)
     q_proj_weight = q_proj_weight.reshape(num_heads, head_dim, embed_dim)
     k_proj_weight = k_proj_weight.reshape(num_heads, head_dim, embed_dim)
     v_proj_weight = v_proj_weight.reshape(num_heads, head_dim, embed_dim)
@@ -135,6 +138,8 @@ def test_multi_head_self_attention():
 
     out_pytorch2, _ = forward_pytorch(X, X, X, embed_dim, num_heads, q_proj_weight,
                         k_proj_weight, v_proj_weight, out_proj_weight)
+
+    assert torch.allclose(out_pytorch1, out_pytorch2)
 
     # compare with simeplgrad
     # convert to simplegrad tensors
@@ -146,8 +151,18 @@ def test_multi_head_self_attention():
 
     X = Tensor(X.data.numpy())
 
-    out_simplegrad, _ = multi_head_attention_forward_simplegrad(X, X, X, embed_dim, num_heads,
-                            q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)
+    out_simplegrad, attn = multi_head_attention_forward_simplegrad(X, X, X, embed_dim, num_heads,
+                            q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight=out_proj_weight)
 
-    assert torch.allclose(out_pytorch1, out_pytorch2)
     assert np.allclose(out_pytorch1.data.numpy(), out_simplegrad.val)
+
+    # test backward pass
+    out_simplegrad.sum().backward()
+    attn.backward()
+
+    grad_in_proj_simplegrad = *(w.grad.reshape(embed_dim, embed_dim) for w in [q_proj_weight, k_proj_weight, v_proj_weight]),
+    grad_out_proj_simplegrad = out_proj_weight.grad.reshape(embed_dim, embed_dim),
+
+    grad_simplegrad = grad_in_proj_simplegrad + grad_out_proj_simplegrad
+
+    assert np.allclose(pytorch_grad, grad_simplegrad, rtol=1e-04, atol=1e-07)
