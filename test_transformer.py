@@ -166,3 +166,26 @@ def test_multi_head_self_attention():
     grad_simplegrad = grad_in_proj_simplegrad + grad_out_proj_simplegrad
 
     assert np.allclose(pytorch_grad, grad_simplegrad, rtol=1e-04, atol=1e-07)
+
+def test_layer_norm():
+    input = torch.randn(20, 5, 10, 10)
+    layer_norm = nn.LayerNorm([10], elementwise_affine=False)
+    output_pytorch = layer_norm(input)
+    out_simplegrad = Tensor(input.data.numpy()).layer_norm(-1, Tensor(1), Tensor(0))
+
+    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-04, atol=1e-07)
+
+def test_layer_norm_with_grad():
+    input = torch.randn(20, 5, 10, 10)
+    layer_norm = nn.LayerNorm([10, 10], elementwise_affine=True)
+    layer_norm.weight = torch.nn.Parameter(torch.randn(layer_norm.weight.shape))
+    output_pytorch = layer_norm(input)
+
+    simplegrad_weight = Tensor(layer_norm.weight.data.numpy())
+    out_simplegrad = Tensor(input.data.numpy()).layer_norm((-1,-2), simplegrad_weight, Tensor(0))
+
+    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-04, atol=1e-07)
+
+    output_pytorch.sum().backward()
+    out_simplegrad.sum().backward()
+    assert np.allclose(layer_norm.weight.grad.data.numpy(), simplegrad_weight.grad, rtol=1e-04, atol=1e-07)
