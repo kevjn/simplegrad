@@ -400,9 +400,16 @@ class Tensor(object):
         _max.add(_sub)
         return self.sub(_max)
 
-    def mean(self):
-        a = Tensor(self.shape[-1])
-        return self.sum(axis=-1, keepdims=True).div(a)
+    def mean(self, axis=-1):
+        a = Tensor(np.prod(np.take(self.shape, axis)))
+        return self.sum(axis=axis, keepdims=True).div(a)
+
+    def layer_norm(self, axes, weight, bias, eps=1e-5):
+        mean = self.fork().mean(axis=axes)
+        self.sub(mean)
+        sd = self.fork().pow(Tensor(2)).mean(axis=axes)
+        denom = sd.add(Tensor(eps)).pow(Tensor(0.5))
+        return self.div(denom).mul(weight).add(bias)
 
     def conv2d(self, w, padding=0, stride=1):
         assert len(self.shape) == len(w.shape) == 4
