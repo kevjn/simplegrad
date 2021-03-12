@@ -52,12 +52,37 @@ def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
         return values, attention, q.grad, k.grad, v.grad
     return values, attention
 
-def multi_head_attention_forward_simplegrad(q, k, v, embed_dim, num_heads, *proj_weights, out_proj_weight):
-        q, k, v = *(x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], proj_weights)),
+def multi_head_attention_forward_simplegrad(q, k, v, embed_dim, num_heads, in_proj_weights, out_proj_weight):
+    # TODO: add bias to in_proj_weight
+    q, k, v = *(x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], in_proj_weights)),
 
-        output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False)
+    output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False)
 
-        return output.dot(out_proj_weight, subscripts="ijkl,mjl->kim"), attn
+    return output.dot(out_proj_weight, subscripts="ijkl,mjl->kim"), attn
+
+# skip bias in multi-head attention for now
+def encoder_layer_forward_simplegrad(src, *, in_proj_weights, out_proj_weight, linear_weights, layernorm_weights):
+    layernorm1_weight, layernorm1_bias, layernorm2_weight, layernorm2_bias = layernorm_weights
+
+    fork1 = src.fork()
+    # Multi-Head Attention forward
+    output, attn = multi_head_attention_forward_simplegrad(src, src, src, 0,0, in_proj_weights, out_proj_weight)
+
+    # Add and Norm forward
+    src = output.add(fork1)
+    src.layer_norm(-1, layernorm1_weight, layernorm1_bias)
+
+    fork2 = src.fork()
+    # Feed forward
+    w0, b0, w1, b1 = linear_weights
+    src.dot(w0, subscripts="ijk,lk->ijl").add(b0).relu()\
+       .dot(w1, subscripts="ijk,lk->ijl").add(b1)
+
+    # Add and Norm forward
+    src.add(fork2)
+    src.layer_norm(-1, layernorm2_weight, layernorm2_bias)
+
+    return src, attn, fork1, fork2
 
 def test_scaled_dot_product_attention():
     def compare(pytorch_tensors, simplegrad_tensors):
@@ -152,7 +177,7 @@ def test_multi_head_self_attention():
     X = Tensor(X.data.numpy())
 
     out_simplegrad, attn = multi_head_attention_forward_simplegrad(X, X, X, embed_dim, num_heads,
-                            q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight=out_proj_weight)
+                            (q_proj_weight, k_proj_weight, v_proj_weight), out_proj_weight)
 
     assert np.allclose(out_pytorch1.data.numpy(), out_simplegrad.val)
 
@@ -165,7 +190,7 @@ def test_multi_head_self_attention():
 
     grad_simplegrad = grad_in_proj_simplegrad + grad_out_proj_simplegrad
 
-    assert np.allclose(pytorch_grad, grad_simplegrad, rtol=1e-04, atol=1e-07)
+    assert np.allclose(pytorch_grad, grad_simplegrad, rtol=1e-07, atol=1e-06)
 
 def test_layer_norm():
     input = torch.randn(20, 5, 10, 10)
@@ -173,7 +198,7 @@ def test_layer_norm():
     output_pytorch = layer_norm(input)
     out_simplegrad = Tensor(input.data.numpy()).layer_norm(-1, Tensor(1), Tensor(0))
 
-    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-04, atol=1e-07)
+    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-06, atol=1e-06)
 
 def test_layer_norm_with_grad():
     input = torch.randn(20, 5, 10, 10)
@@ -181,11 +206,95 @@ def test_layer_norm_with_grad():
     layer_norm.weight = torch.nn.Parameter(torch.randn(layer_norm.weight.shape))
     output_pytorch = layer_norm(input)
 
-    simplegrad_weight = Tensor(layer_norm.weight.data.numpy())
-    out_simplegrad = Tensor(input.data.numpy()).layer_norm((-1,-2), simplegrad_weight, Tensor(0))
+    simplegrad_weight = Tensor(layer_norm.weight.clone().data.numpy())
+    simplegrad_bias = Tensor(layer_norm.bias.clone().data.numpy())
+    out_simplegrad = Tensor(input.data.numpy()).layer_norm((-1,-2), simplegrad_weight, simplegrad_bias)
 
-    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-04, atol=1e-07)
+    assert np.allclose(output_pytorch.data.numpy(), out_simplegrad.val, rtol=1e-06, atol=1e-06)
 
     output_pytorch.sum().backward()
     out_simplegrad.sum().backward()
-    assert np.allclose(layer_norm.weight.grad.data.numpy(), simplegrad_weight.grad, rtol=1e-04, atol=1e-07)
+    assert np.allclose(layer_norm.weight.grad.data.numpy(), simplegrad_weight.grad, rtol=1e-06, atol=1e-05)
+    assert np.allclose(layer_norm.bias.grad.data.numpy(), simplegrad_bias.grad, rtol=1e-06, atol=1e-05)
+
+def test_encoder_layer():
+    # Model hyperparameters
+    embed_dim = 512
+    num_heads = 8
+    head_dim = embed_dim // num_heads
+
+    encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, dropout=0.0, dim_feedforward=64)
+    src = torch.rand(10, 32, 512)
+    out_pytorch = encoder_layer(src)
+
+    weights = encoder_layer.parameters()
+
+    # extract Multi-Head Self Attention weights
+    in_proj_weight, in_proj_bias, out_proj_weight, out_proj_bias, *other = weights
+
+    # extract Linear weights
+    linear1_weight, linear1_bias, linear2_weight, linear2_bias, *other = other
+
+    # extract LayerNorm weights
+    layernorm1_weight, layernorm1_bias, layernorm2_weight, layernorm2_bias = other
+
+    # get gradients from pytorch
+    out_pytorch.sum().backward()
+    pytorch_grad = [w.grad.clone().data.numpy() for w in encoder_layer.parameters()]
+
+    # preprocess weights for simplegrad
+    # split in_proj_weights into q,k,v
+    q_proj_weight, k_proj_weight, v_proj_weight = in_proj_weight.chunk(3, dim=0)
+
+    # reshape the first embed_dim dimension into (num_heads, head_dim)
+    q_proj_weight = q_proj_weight.reshape(num_heads, head_dim, embed_dim)
+    k_proj_weight = k_proj_weight.reshape(num_heads, head_dim, embed_dim)
+    v_proj_weight = v_proj_weight.reshape(num_heads, head_dim, embed_dim)
+
+    # also reshape out_proj_weight
+    out_proj_weight = out_proj_weight.reshape(embed_dim, num_heads, head_dim)
+
+    # convert all weights to simplegrad Tensors
+    *in_proj_weights, out_proj_weight = [Tensor(x.data.numpy()) for x in (q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)]
+    linear_weights = [Tensor(x.data.numpy()) for x in (linear1_weight, linear1_bias, linear2_weight, linear2_bias)]
+    layernorm_weights = [Tensor(x.data.numpy()) for x in (layernorm1_weight, layernorm1_bias, layernorm2_weight, layernorm2_bias)]
+
+    # skip bias in multi-head attention for now
+    out_simplegrad, attn, fork1, fork2 = encoder_layer_forward_simplegrad(Tensor(src.data.numpy()),
+                        in_proj_weights = in_proj_weights,
+                        out_proj_weight = out_proj_weight,
+                        linear_weights =  linear_weights,
+                        layernorm_weights = layernorm_weights)
+
+    assert np.allclose(out_simplegrad.val, out_pytorch.data.numpy(), rtol=1e-06, atol=1e-05)
+
+    # Test backward pass
+    out_simplegrad.backward() # Same as out.simplegrad.backward()
+    # Also call backward on fork
+    attn.backward() # otherwise the backward pass never gets initiated
+
+    # floating point precision seems to create some flakiness
+    # TODO: create tests with lower tolerance
+
+    # compare gradient in weights from last layernorm
+    assert np.allclose(layernorm_weights[-1].grad, pytorch_grad[-1]) # bias
+    assert np.allclose(layernorm_weights[-2].grad, pytorch_grad[-2], atol=1e-05) # weight
+
+    # compare gradients in weights from feedforward layer
+    assert np.allclose(linear_weights[-1].grad, pytorch_grad[-5], atol=1e-05) # bias
+    assert np.allclose(linear_weights[-2].grad, pytorch_grad[-6], atol=1e-05) # weight
+    assert np.allclose(linear_weights[-3].grad, pytorch_grad[-7], atol=1e-05) # bias
+    assert np.allclose(linear_weights[-4].grad, pytorch_grad[-8], atol=1e-05) # weight
+
+    # compare gradient in weights from first layernorm
+    assert np.allclose(layernorm_weights[-3].grad, pytorch_grad[-3], atol=1e-05) # bias
+    assert np.allclose(layernorm_weights[-4].grad, pytorch_grad[-4], atol=1e-05) # weight
+
+    # reshape in_proj_weights back
+    in_proj_weight_grad = np.concatenate([w.grad.reshape(embed_dim, embed_dim) for w in in_proj_weights])
+    # compare gradient from in_proj_weights
+    assert np.allclose(in_proj_weight_grad, pytorch_grad[0], rtol=1e-07, atol=1e-06)
+
+    # reshape out_proj_weights back
+    out_proj_weight_grad = out_proj_weight.grad.reshape(embed_dim, embed_dim)
+    assert np.allclose(out_proj_weight_grad, pytorch_grad[2], rtol=1e-07, atol=1e-05)
