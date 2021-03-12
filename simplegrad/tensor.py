@@ -194,11 +194,11 @@ class Tensor(object):
     def binary_operation(expr):
         def unbroadcast(backward):
             def reduce(grad, shape):
-                if shape >= grad.shape: 
-                    return grad
                 _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
                 idx = np.not_equal(grad.shape, _shape)
                 axes = *np.arange(grad.ndim)[idx],
+                if not axes:
+                    return grad
                 return Device.load_directly("sum", Device.Parser.reduction, axis=axes)(grad).reshape(shape)
             def wrapper(dv, x, y):
                 return *it.starmap(reduce, zip(backward(dv, x, y), (y.shape, x.shape))),
