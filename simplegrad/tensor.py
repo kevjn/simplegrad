@@ -78,8 +78,7 @@ class Device(object):
                 return [args[0].size], None, res, *(a.data for a in args), res.data
 
             def binary(x, y, **kwargs):
-                shapes_padded = it.zip_longest(x.shape[::-1], y.shape[::-1], fillvalue=0)
-                res = cl.array.empty(Device.GPU.queue, tuple(it.starmap(max, shapes_padded))[::-1], np.float32)
+                res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
 
                 xstrides = (np.equal(np.pad(x.shape, (len(res.shape)-len(x.shape),0)), res.shape) * \
