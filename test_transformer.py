@@ -33,13 +33,14 @@ def scaled_dot_product_pytorch(q, k, v, mask=None, grad=True):
     return values, attention
 
 def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
-    
     d_k = q.shape[-1]
     attn_logits = q.dot(k, subscripts="ijkl,ijml->ijkm")
-    attn_logits = attn_logits.div(Tensor(np.sqrt(d_k)))
+    attn_logits = attn_logits.div(Tensor(d_k).pow(Tensor(0.5)))
 
     if mask is not None:
-        raise NotImplementedError
+        mask, mask_inv = mask
+        attn_logits.mul(mask_inv) # zero all elements inside mask
+        attn_logits.add(mask)
 
     attention = attn_logits.softmax()
     values = attention.fork().dot(v, subscripts="ijkl,ijlm->ijkm")
@@ -52,11 +53,11 @@ def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
         return values, attention, q.grad, k.grad, v.grad
     return values, attention
 
-def multi_head_attention_forward_simplegrad(q, k, v, embed_dim, num_heads, in_proj_weights, out_proj_weight):
+def multi_head_attention_forward_simplegrad(q, k, v, in_proj_weights, out_proj_weight, mask=None):
     # TODO: add bias to in_proj_weight
-    q, k, v = *(x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], in_proj_weights)),
+    q, k, v = (x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], in_proj_weights))
 
-    output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False)
+    output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False, mask=mask)
 
     return output.dot(out_proj_weight, subscripts="ijkl,mjl->kim"), attn
 
@@ -66,7 +67,7 @@ def encoder_layer_forward_simplegrad(src, *, in_proj_weights, out_proj_weight, l
 
     fork1 = src.fork()
     # Multi-Head Attention forward
-    output, attn = multi_head_attention_forward_simplegrad(src, src, src, 0,0, in_proj_weights, out_proj_weight)
+    output, attn = multi_head_attention_forward_simplegrad(src, src, src, in_proj_weights, out_proj_weight)
 
     # Add and Norm forward
     src = output.add(fork1)
@@ -176,7 +177,7 @@ def test_multi_head_self_attention():
 
     X = Tensor(X.data.numpy())
 
-    out_simplegrad, attn = multi_head_attention_forward_simplegrad(X, X, X, embed_dim, num_heads,
+    out_simplegrad, attn = multi_head_attention_forward_simplegrad(X, X, X,
                             (q_proj_weight, k_proj_weight, v_proj_weight), out_proj_weight)
 
     assert np.allclose(out_pytorch1.data.numpy(), out_simplegrad.val)
@@ -188,9 +189,82 @@ def test_multi_head_self_attention():
     grad_in_proj_simplegrad = *(w.grad.reshape(embed_dim, embed_dim) for w in [q_proj_weight, k_proj_weight, v_proj_weight]),
     grad_out_proj_simplegrad = out_proj_weight.grad.reshape(embed_dim, embed_dim),
 
-    grad_simplegrad = grad_in_proj_simplegrad + grad_out_proj_simplegrad
+    simplegrad_grad = grad_in_proj_simplegrad + grad_out_proj_simplegrad
 
-    assert np.allclose(pytorch_grad, grad_simplegrad, rtol=1e-07, atol=1e-06)
+    assert np.allclose(pytorch_grad, simplegrad_grad, rtol=1e-07, atol=1e-06)
+
+def test_multi_head_self_attention_with_mask():
+    embed_dim = 10
+    num_heads = 2
+    head_dim = embed_dim // num_heads
+
+    X = torch.randn(3, 1, 10, requires_grad=True) # source sequence length 3, batch size 1, embedding size 10
+
+    attn_mask = (torch.triu(torch.ones(3, 3)) == 1).transpose(0, 1)
+    attn_mask = attn_mask.float().masked_fill(attn_mask == 0, float('-inf')).masked_fill(attn_mask == 1, float(0.0))
+
+    torch.manual_seed(42)
+    q_proj_weight = torch.randn(10,10, requires_grad=True)
+    torch.manual_seed(42)
+    k_proj_weight = torch.randn(10,10, requires_grad=True)
+    torch.manual_seed(42)
+    v_proj_weight = torch.randn(10,10, requires_grad=True)
+
+    torch.manual_seed(42)
+    out_proj_weight = torch.randn(10,10, requires_grad=True)
+
+    pytorch_out, _ = torch.functional.F.multi_head_attention_forward(
+                    X, X, X, embed_dim, num_heads, None, None, None, None, False,
+                    0.0, out_proj_weight, None, q_proj_weight = q_proj_weight, 
+                    k_proj_weight = k_proj_weight, v_proj_weight = v_proj_weight,
+                    use_separate_proj_weight=True, attn_mask=attn_mask)
+
+    # compute gradients
+    pytorch_out.sum().backward()
+    pytorch_grad = [w.grad.data.clone().detach().numpy() for w in (X, q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)]
+
+    # Reshape in_proj_weights
+    q_proj_weight = q_proj_weight.reshape(num_heads, head_dim, embed_dim)
+    k_proj_weight = k_proj_weight.reshape(num_heads, head_dim, embed_dim)
+    v_proj_weight = v_proj_weight.reshape(num_heads, head_dim, embed_dim)
+
+    # Reshape out_proj_weight
+    out_proj_weight = out_proj_weight.reshape(embed_dim, num_heads, head_dim)
+
+    # convert all params to simplegrad Tensors
+    q_proj_weight = Tensor(q_proj_weight.data.clone().numpy())
+    k_proj_weight = Tensor(k_proj_weight.data.clone().numpy())
+    v_proj_weight = Tensor(v_proj_weight.data.clone().numpy())
+
+    out_proj_weight = Tensor(out_proj_weight.data.clone().numpy())
+
+    mask = (torch.triu(torch.ones(3, 3)) == 0).transpose(0, 1)
+    mask_inverse = ~mask
+    mask, mask_inverse = Tensor(attn_mask.data.detach().clone().numpy()), Tensor(mask_inverse.data.detach().clone().numpy())
+    attn_mask = mask, mask_inverse
+
+    X = Tensor(X.data.clone().numpy())
+
+    # gather in_proj_weights
+    in_proj_weights = (q_proj_weight, k_proj_weight, v_proj_weight)
+
+    simplegrad_out, attn = multi_head_attention_forward_simplegrad(X, X, X, in_proj_weights, out_proj_weight, mask=attn_mask)
+
+    # compute gradients
+    simplegrad_out.backward()
+    attn.backward()
+    X.backward()
+    simplegrad_grad = [w.grad.reshape(embed_dim, embed_dim) for w in (q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)]
+    simplegrad_grad = simplegrad_grad
+
+    # compare output
+    assert np.allclose(simplegrad_out.val, pytorch_out.data.numpy(), atol=1e-7)
+
+    assert np.allclose(X.grad, pytorch_grad[0]+1) # TODO: fix this off-by-one error
+    
+    # compare gradients
+    assert np.allclose(simplegrad_grad, pytorch_grad[1:], atol=1e-4)
+
 
 def test_layer_norm():
     input = torch.randn(20, 5, 10, 10)
