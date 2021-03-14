@@ -38,8 +38,6 @@ def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
     attn_logits = attn_logits.div(Tensor(d_k).pow(Tensor(0.5)))
 
     if mask is not None:
-        mask, mask_inv = mask
-        attn_logits.mul(mask_inv) # zero all elements inside mask
         attn_logits.add(mask)
 
     attention = attn_logits.softmax()
@@ -54,7 +52,6 @@ def scaled_dot_product_simplegrad(q, k, v, mask=None, grad=True):
     return values, attention
 
 def multi_head_attention_forward_simplegrad(q, k, v, in_proj_weights, out_proj_weight, mask=None):
-    # TODO: add bias to in_proj_weight
     q, k, v = (x.fork().dot(w, subscripts="ijk,lmk->jlim") for x,w in zip([q,k,v], in_proj_weights))
 
     output, attn = scaled_dot_product_simplegrad(q, k, v, grad=False, mask=mask)
@@ -238,17 +235,12 @@ def test_multi_head_self_attention_with_mask():
 
     out_proj_weight = Tensor(out_proj_weight.data.clone().numpy())
 
-    mask = (torch.triu(torch.ones(3, 3)) == 0).transpose(0, 1)
-    mask_inverse = ~mask
-    mask, mask_inverse = Tensor(attn_mask.data.detach().clone().numpy()), Tensor(mask_inverse.data.detach().clone().numpy())
-    attn_mask = mask, mask_inverse
-
     X = Tensor(X.data.clone().numpy())
 
     # gather in_proj_weights
     in_proj_weights = (q_proj_weight, k_proj_weight, v_proj_weight)
 
-    simplegrad_out, attn = multi_head_attention_forward_simplegrad(X, X, X, in_proj_weights, out_proj_weight, mask=attn_mask)
+    simplegrad_out, attn = multi_head_attention_forward_simplegrad(X, X, X, in_proj_weights, out_proj_weight, mask=Tensor(attn_mask.data.clone().detach()))
 
     # compute gradients
     simplegrad_out.backward()
