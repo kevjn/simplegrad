@@ -365,3 +365,138 @@ def test_encoder_layer():
     # reshape out_proj_weights back
     out_proj_weight_grad = out_proj_weight.grad.reshape(embed_dim, embed_dim)
     assert np.allclose(out_proj_weight_grad, pytorch_grad[2], rtol=1e-07, atol=1e-05)
+
+
+
+class Transformer:
+    def __init__(self, embed_dim, num_heads, num_classes):
+        assert embed_dim % num_heads == 0
+        self.embed_dim, max_len = embed_dim, embed_dim*2
+        head_dim = embed_dim // num_heads
+
+        # Create matrix representing the positional encoding for max_len inputs
+        pe = np.zeros((max_len, embed_dim))
+        position = np.expand_dims(np.arange(0, max_len, dtype=np.float), 1)
+        div_term = np.exp(np.arange(0, embed_dim, 2, dtype=np.float32) * (-np.log(10000.0) / embed_dim))
+        pe[:, 0::2] = np.sin(position * div_term) # even
+        pe[:, 1::2] = np.cos(position * div_term) # odd
+        self.pe = np.expand_dims(pe, 1)
+
+        # initialize weights for input net
+        self.w0 = Tensor(np.random.randn(embed_dim, num_classes))
+        self.b0 = Tensor(np.random.randn(embed_dim))
+
+        # initialize uniform weights for multihead-attention
+        k = 1 / embed_dim
+        self.query_dense = Tensor(np.random.uniform(size=(num_heads, head_dim, embed_dim), low=-np.sqrt(k), high=np.sqrt(k)))
+        self.key_dense = Tensor(np.random.uniform(size=(num_heads, head_dim, embed_dim), low=-np.sqrt(k), high=np.sqrt(k)))
+        self.value_dense = Tensor(np.random.uniform(size=(num_heads, head_dim, embed_dim), low=-np.sqrt(k), high=np.sqrt(k)))
+        self.out_proj_weight = Tensor(np.random.uniform(size=(embed_dim, num_heads, head_dim), low=-np.sqrt(k), high=np.sqrt(k)))
+        self.out_proj_bias = Tensor(np.zeros((num_heads, head_dim)))
+
+        # initialize weights for normalization layer
+        self.layernorm_weight = Tensor(np.ones(embed_dim))
+        self.layernorm_bias = Tensor(np.zeros(embed_dim))
+
+        # initialize weights for output net
+        self.w1 = Tensor(np.random.randn(num_classes, embed_dim))
+        self.b1 = Tensor(np.random.randn(num_classes))
+
+    @property
+    def params(self):
+        return self.w0, self.b0, self.w1, self.b1, \
+               self.query_dense, self.key_dense, self.value_dense, \
+               self.out_proj_weight, self.out_proj_bias, \
+               self.layernorm_weight, self.layernorm_bias
+
+    def forward(self, x: Tensor):
+        """
+        Inputs:
+            x - Input features of shape [SeqLen, Batch, input_dim]
+            note: input_dim is the same as num_categories
+        """
+        # map the one-hot input to a dense vector of shape [SeqLen, Batch, embed_dim]
+        x.dot(self.w0, subscripts="ijk,lk->ijl").add(self.b0)
+
+        # positional encoding for sequences
+        x.add(Tensor(self.pe[:x.shape[0]]))
+
+        # Encoder block
+        residual = x.fork()
+        ## Multi-Head Attention
+        x, attn = self.multi_head_attention_forward(x)
+        ## Add and Norm
+        x.add(residual).layer_norm(-1, self.layernorm_weight, self.layernorm_bias)
+
+        # Output net maps the vector back to a sparse one-hot output
+        return x.dot(self.w1, subscripts="ijk,lk->ijl").add(self.b1)
+
+    def multi_head_attention_forward(self, x, mask=None):
+        k = x.fork().dot(self.key_dense, subscripts="ijk,lmk->jlim")
+        v = x.fork().dot(self.value_dense, subscripts="ijk,lmk->jlim")
+        q = x.dot(self.query_dense, subscripts="ijk,lmk->jlim")
+
+        attn_logits = q.dot(k, subscripts="ijkl,ijml->ijkm").div(Tensor(q.shape[-1]).pow(Tensor(0.5)))
+
+        if mask:
+            attn_logits.add(mask)
+        attn = attn_logits.softmax()
+
+        values = attn.dot(v, subscripts="ijkl,ijlm->ijkm")
+        output = values.dot(self.out_proj_weight, subscripts="ijkl,mjl->kim").add(self.out_proj_bias)
+        return output, attn
+
+def test_seq2seq_model():
+    # taken from: https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial6/Transformers_and_MHAttention.html#Sequence-to-Sequence
+    # Given a sequence of N numbers, the task is to reverse the input sequence.
+    # RNNs can have issues with such because the task requires long-term dependencies.
+    # Transformers are expected to excel on this task.
+
+    # Data hyperparameters
+    seq_len = 16
+    batches = 400
+    batch_size = 64
+    num_categories = 10
+
+    # training data
+    X = np.random.randint(num_categories, size=(batches, seq_len, batch_size))
+    y = X[:,::-1,:]
+
+    # one-hot encode training data
+    X = np.eye(num_categories)[X].astype(np.float32)
+    y = np.eye(num_categories)[y].astype(np.float32)
+    batches = zip(X, y)
+
+    # Model hyperparameters
+    embed_dim = 32
+    num_heads = 1
+
+    model = Transformer(embed_dim, num_heads, num_categories)
+    optim = optimizer.Adam(model.params, learning_rate=5e-4)
+
+    for epoch, batch in it.product(range(epochs := 10), batches):
+        X, y = batch
+
+        out = model.forward(Tensor(X))
+        # compute accuracy
+        acc = (out.val.argmax(axis=-1) == y.argmax(axis=-1)).mean()
+
+        # categorical prediction since output is one-hot
+        out = out.logsoftmax()
+        # negative log likelihood loss
+        loss = Tensor(y).mul(out).mul(Tensor(-1.0)).sum(axis=-1).mean(axis=(0,1))
+
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
+
+    # generate some test data
+    X = np.random.randint(num_categories, size=(seq_len, batch_size))
+    y = X[::-1,:]
+    X = np.eye(num_categories)[X]
+
+    # check accuracy for test data
+    out = model.forward(Tensor(X))
+    acc = (out.val.argmax(axis=-1) == y).astype(np.float32).mean()
+
+    assert acc == 1.0
