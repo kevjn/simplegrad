@@ -244,15 +244,16 @@ def test_multi_head_self_attention_with_mask():
 
     # compute gradients
     simplegrad_out.backward()
-    attn.backward()
-    X.backward()
+
+    attn._backward(np.zeros(attn.shape))
+    X._backward(np.zeros(X.shape))
     simplegrad_grad = [w.grad.reshape(embed_dim, embed_dim) for w in (q_proj_weight, k_proj_weight, v_proj_weight, out_proj_weight)]
     simplegrad_grad = simplegrad_grad
 
     # compare output
     assert np.allclose(simplegrad_out.val, pytorch_out.data.numpy(), atol=1e-7)
 
-    assert np.allclose(X.grad, pytorch_grad[0]+1) # TODO: fix this off-by-one error
+    assert np.allclose(X.grad, pytorch_grad[0], atol=1e-5)
     
     # compare gradients
     assert np.allclose(simplegrad_grad, pytorch_grad[1:], atol=1e-4)
