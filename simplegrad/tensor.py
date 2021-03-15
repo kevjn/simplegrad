@@ -119,8 +119,7 @@ class Device(object):
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
                 return global_work_size, None, res, x.data, strides.data, anchored_axes.data, \
-                        np.int32(axis), np.int32(x.shape[axis]), np.int32(len(global_work_size)), \
-                        res.data, res_strides.data
+                        np.int32(axis), np.int32(x.shape[axis]), res.data, res_strides.data
 
         def kernel_wrapper(kernel):
             def wrapper(global_work_size, local_work_size, res, *args):

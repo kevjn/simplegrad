@@ -62,28 +62,25 @@ void sum_forward(__global const float* buffer,
             __global const int* anchored_axes,
             __const int reduced_axis,
             __const int reduced_axis_size,
-            __const int result_ndims,
             __global float* result,
             __global const int* result_strides)
 {
   float accum = 0; // identity
 
+  int offset = 0;
+  int idx = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    offset += get_global_id(dim) * strides[anchored_axes[dim]];
+    idx += get_global_id(dim) * result_strides[dim];
+  }
+
   // sum over k
   for (int k = 0; k < reduced_axis_size; k++)
   {
-    int offset = 0;
-    for (int ax = 0; ax < result_ndims; ax++)
-    {
-      offset += get_global_id(ax) * strides[anchored_axes[ax]];
-    }
     accum += buffer[k * strides[reduced_axis] + offset];
   }
 
-  int idx = 0;
-  for (int ax = 0; ax < result_ndims; ax++)
-  {
-    idx += get_global_id(ax) * result_strides[ax];
-  }
   result[idx] = accum;
 }
 

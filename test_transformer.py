@@ -1,5 +1,6 @@
 from simplegrad.tensor import Device, Tensor
 from simplegrad import optim as optimizer
+import itertools as it
 
 import numpy as np
 np.random.seed(42)
