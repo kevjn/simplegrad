@@ -33,6 +33,25 @@ def test_sum_all_axes():
     a = np.random.randn(5,10,20,25).astype(np.float32)
     assert equal_sum_over_all_axes(a)
 
+def test_sum_multiple_axes_at_once():
+    a = np.random.randn(10,50,30,25).astype(np.float32)
+
+    assert equal_sum_over_axis(a, axis=(0,1))
+
+    assert equal_sum_over_axis(a, axis=(1,0))
+
+    assert equal_sum_over_axis(a, axis=(1,0,2))
+
+    assert equal_sum_over_axis(a, axis=(2,0,1,3))
+
+def test_sum_all_axes_at_once():
+    a = np.random.randn(5,25,10,30).astype(np.float32)
+
+    res_cpu = np.sum(a, axis=None)
+    res_gpu = Tensor(a).sum(axis=None).val
+
+    assert np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
+
 def test_broadcasting_add():
     a = np.array([[ 0.0,  0.0,  0.0],
                [10.0, 10.0, 10.0],
