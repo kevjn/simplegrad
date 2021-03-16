@@ -26,17 +26,17 @@ class Device(object):
         return f(**kwargs)[backward]
 
     def to_device(x):
-        return np.array(x)
+        return np.array(x, dtype=np.float32)
 
     def operation_wrapper(op, parser, **kwargs):
         def wrapper(*args):
-            return op(*parser(*args, **kwargs))
+            return parser(op, *args, **kwargs)
         return wrapper
 
     class CPU:
         class Parser(object):
-            def default(*args, **kwargs):
-                return args
+            def default(op, *args, **kwargs):
+                return op(*args)
 
         Parser.reduction = Parser.binary = Parser.default
     Parser = CPU.Parser
@@ -53,7 +53,7 @@ class Device(object):
                 tokens = kernel.function_name.split("_")
                 assert len(tokens) == 2
                 name, direction = tokens
-                ops[name][direction != "forward"] = Device.GPU.kernel_wrapper(kernel)
+                ops[name][direction != "forward"] = functools.partial(kernel, Device.GPU.queue)
 
             # freeze dictionary values
             Device.GPU.ops = defaultdict(lambda: (None, None), \
@@ -72,12 +72,13 @@ class Device(object):
 
         class Parser(object):
 
-            def default(*args, **kwargs):
+            def default(kernel, *args, **kwargs):
                 # allocate output buffer on device
                 res = cl.array.empty_like(args[0])
-                return [args[0].size], None, res, *(a.data for a in args), res.data
+                kernel([args[0].size], None, *(a.data for a in (*args, res)))
+                return res
 
-            def binary(x, y, **kwargs):
+            def binary(kernel, x, y, **kwargs):
                 res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
 
@@ -89,44 +90,39 @@ class Device(object):
                             np.pad(y.strides, (len(res.shape)-len(y.shape),0)) // 4).astype(np.int32)
                 ystrides = cl.array.to_device(Device.GPU.queue, ystrides)
 
-                return res.shape, None, res, x.data, xstrides.data, y.data, ystrides.data, \
+                args = x.data, xstrides.data, y.data, ystrides.data, \
                         res.data, np.int32(res.ndim), res_strides.data
+                
+                kernel(res.shape, None, *args)
+                return res
 
-            def reduction(*args, axis=None, **kwargs):
-                assert len(args) == 1, "binary reduction not implemented yet"
-                assert axis is not None
-                if type(axis) is tuple:
-                    assert len(axis) == 1, "reduction over multiple axes not implemented yet"
-                    axis = axis[0]
-
-                x = args[0].astype(np.float32)
+            def reduction(kernel, x, axis=None, **kwargs):
+                if axis is None and (axis := tuple(range(x.ndim))) or type(axis) is tuple:
+                    for ax in sorted(axis, reverse=True):
+                        x = Device.GPU.Parser.reduction(kernel, x, axis=ax)
+                    return x
 
                 strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)
                 strides = cl.array.to_device(Device.GPU.queue, strides)
 
-                anchored_axes = np.arange(x.ndim, dtype=np.int32)
-                anchored_axes = np.delete(anchored_axes, axis)
+                anchored_axes = np.delete(range(x.ndim), axis).astype(np.int32)
                 if not anchored_axes.size:
                     anchored_axes = np.array([axis], dtype=np.int32)
                     global_work_size = np.array([1], dtype=np.int32)
                 else:
                     global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+
                 anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
 
-                res = np.empty(global_work_size, dtype=np.float32)
-                res = cl.array.to_device(Device.GPU.queue, res)
+                res = cl.array.empty(Device.GPU.queue, tuple(global_work_size), np.float32)
                 res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
+                
+                args = x.data, strides.data, anchored_axes.data, \
+                       np.int32(axis), np.int32(x.shape[axis]), res.data, res_strides.data
 
-                return global_work_size, None, res, x.data, strides.data, anchored_axes.data, \
-                        np.int32(axis), np.int32(x.shape[axis]), res.data, res_strides.data
-
-        def kernel_wrapper(kernel):
-            def wrapper(global_work_size, local_work_size, res, *args):
-                # call the kernel
-                kernel(Device.GPU.queue, global_work_size, local_work_size, *args)
+                kernel(global_work_size, None, *args)
                 return res
-            return wrapper
 
 
 class Tensor(object):
