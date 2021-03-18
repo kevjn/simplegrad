@@ -38,7 +38,7 @@ class Device(object):
             def default(op, *args, **kwargs):
                 return op(*args)
 
-        Parser.reduction = Parser.binary = Parser.default
+        Parser.reduction = Parser.binary = Parser.binary_reduction = Parser.default
     Parser = CPU.Parser
 
     class GPU:
@@ -94,6 +94,51 @@ class Device(object):
                         res.data, np.int32(res.ndim), res_strides.data
                 
                 kernel(res.shape, None, *args)
+                return res
+
+            def binary_reduction(kernel, x, y, subscripts=None):
+                # combines broadcasting and reduction parsing
+                assert subscripts
+                x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
+                reduced_subscripts = set(x_subs) & set(y_subs) - set(out_subs)
+                assert len(reduced_subscripts) == 1, "reduction over multiple axis or no axis not implemented yet"
+
+                reduced_subscript = reduced_subscripts.pop()
+
+                anchored_axis_x = (set(x_subs) - set(y_subs)).pop()
+                anchored_axis_y = (set(y_subs) - set(x_subs)).pop()
+
+                # convert subscripts to indices
+                reduced_axis_x = x_subs.index(reduced_subscript)
+                reduced_axis_y = y_subs.index(reduced_subscript)
+                assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
+                reduced_axis_size = x.shape[reduced_axis_x]
+
+                order = sorted(range(x.ndim), key=lambda k: out_subs[k] > y_subs[k])
+
+                xstrides = np.zeros(x.ndim, dtype=np.int32)
+                anchored_idx = out_subs.index(anchored_axis_x)
+                xstrides[np.array(order) == np.array(anchored_idx)] = x.strides[order[anchored_idx]] // 4 if order[anchored_idx] == x_subs.index(anchored_axis_x) else x.strides[~order[anchored_idx]] // 4
+
+                ystrides = np.zeros(y.ndim, dtype=np.int32)
+                anchored_idx = out_subs.index(anchored_axis_y)
+                ystrides[np.array(order) == np.array(anchored_idx)] = y.strides[order[anchored_idx]] // 4 if order[anchored_idx] == y_subs.index(anchored_axis_y) else y.strides[~order[anchored_idx]] // 4
+
+                # convert to opencl
+                reduced_axis_x = np.int32(reduced_axis_x)
+                reduced_axis_size = np.int32(reduced_axis_size)
+                reduced_axis_y = np.int32(reduced_axis_y)
+                x_strides = cl.array.to_device(Device.GPU.queue, xstrides)
+                y_strides = cl.array.to_device(Device.GPU.queue, ystrides)
+
+                res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
+                res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32)[order] // 4)
+                strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
+
+                # call kernel
+                kernel(res.shape, None, x.data, y.data, x_strides.data, y_strides.data, \
+                    reduced_axis_x, reduced_axis_y, reduced_axis_size, res.data, strides.data, res_strides.data)
+
                 return res
 
             def reduction(kernel, x, axis=None, **kwargs):
@@ -205,7 +250,8 @@ class Tensor(object):
                 return dx
             return wrapper
 
-        def wrapper(self, operand, **kwargs):
+        @functools.wraps(expr)
+        def wrapper(self, operand, parsers=(Device.Parser.binary,)*2, **kwargs):
             @functools.wraps(expr)
             def expr_wrapper(**kwargs):
                 forward, backward = expr(**kwargs)
@@ -214,12 +260,20 @@ class Tensor(object):
                 return forward, propagate(unbroadcast(backward), operand)
             args = self.val, operand.val
             return Tensor.operation(expr_wrapper)(self, *args, \
-                parsers=(Device.Parser.binary,)*2, **kwargs)
+                parsers=parsers, **kwargs)
+        return wrapper
+
+    def binary_reduction_operation(expr):
+        @functools.wraps(expr)
+        def wrapper(self, *args, **kwargs):
+            return Tensor.binary_operation(expr)(self, *args, \
+                parsers=(Device.Parser.binary_reduction, Device.Parser.binary), **kwargs)
         return wrapper
 
     operation.unary = unary_operation
     operation.unary.reduction = unary_reduction_operation
     operation.binary = binary_operation
+    operation.binary.reduction = binary_reduction_operation
 
     # ========== unary ops ==========
 
@@ -320,7 +374,7 @@ class Tensor(object):
 
     # ========== processing ops ==========
 
-    @operation.binary
+    @operation.binary.reduction
     def dot(subscripts='i...j,j...h->i...h'):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
