@@ -23,6 +23,11 @@ def equal_add(a: np.ndarray, b: np.ndarray):
     tensor_simplegrad = Tensor(a).add(Tensor(b))
     return np.allclose(tensor_simplegrad.val.get(), tensor_pytorch.data.numpy())
 
+def equal_einsum(subscripts, a: np.ndarray, b: np.ndarray):
+    res_gpu = Tensor(a).dot(Tensor(b), subscripts=subscripts).val
+    res_cpu = np.einsum(subscripts, a, b)
+    return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
+
 def test_sum_reduction_kernel():
     a = np.random.randn(10,100,60,5).astype(np.float32)
 
@@ -51,6 +56,30 @@ def test_sum_all_axes_at_once():
     res_gpu = Tensor(a).sum(axis=None).val
 
     assert np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
+
+def test_einsum_reduction():
+    a = np.random.randn(10,10).astype(np.float32)
+    b = np.random.randn(10,10).astype(np.float32)
+
+    # Matrix multiplication
+    assert equal_einsum("ij,jk->ik", a, b)
+
+    # Matrix multiplication with transposed output
+    assert equal_einsum("ij,jk->ki", a, b)
+
+    # Matrix multiplication with transposed a operand
+    assert equal_einsum("ji,jk->ik", a, b)
+
+    # Matrix multiplication with transposed b operand
+    assert equal_einsum("ij,kj->ik", a, b)
+
+    # Matrix multiplication with transposed a and b operand
+    assert equal_einsum("ji,kj->ik", a, b)
+
+    # Matrix multiplication with transposed output and operand
+    assert equal_einsum("ji,kj->ki", a, b)
+
+    # Matrix hadamard product
 
 def test_broadcasting_add():
     a = np.array([[ 0.0,  0.0,  0.0],
