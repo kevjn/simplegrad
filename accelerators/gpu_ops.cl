@@ -101,3 +101,36 @@ __kernel void sum_backward(__global const float *dv_g,
   }
   res_g[i] = dv_g[idv];
 }
+
+__kernel
+void dot_forward(__global const float* x_g,
+            __global const float* y_g,
+            __global const int* x_strides,
+            __global const int* y_strides,
+            __const int reduced_axis_x,
+            __const int reduced_axis_y,
+            __const int reduced_axis_size,
+            __global float* result,
+            __global const int* strides,
+            __global const int* result_strides)
+{
+  // strides for x and y must be equal for now
+
+  float accum = 0; // identity
+
+  int idx = 0, ix = 0, iy = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    idx += get_global_id(dim) * result_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  // sum over k
+  for (int k = 0; k < reduced_axis_size; k++)
+  {
+    accum += x_g[k * strides[reduced_axis_x] + ix] * y_g[k * strides[reduced_axis_y] + iy];
+  }
+
+  result[idx] = accum;
+}
