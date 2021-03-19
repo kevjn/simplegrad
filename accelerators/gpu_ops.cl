@@ -134,3 +134,23 @@ void dot_forward(__global const float* x_g,
 
   result[idx] = accum;
 }
+
+__kernel 
+void mul_forward(__global const float *x_g,
+                          __global const int* x_strides,
+                          __global const float *y_g, 
+                          __global const int* y_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  int idx = 0, ix = 0, iy = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    idx += get_global_id(dim) * res_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  res_g[idx] = x_g[ix] * y_g[iy];
+}
