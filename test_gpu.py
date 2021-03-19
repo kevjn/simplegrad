@@ -79,7 +79,22 @@ def test_einsum_reduction():
     # Matrix multiplication with transposed output and operand
     assert equal_einsum("ji,kj->ki", a, b)
 
+def test_einsum_with_no_reduction():
+    a = np.random.randn(10,10).astype(np.float32)
+    b = np.random.randn(10,10).astype(np.float32)
+
     # Matrix hadamard product
+    assert equal_einsum("ij,ij->ij", a, b)
+
+    assert equal_einsum("ji,ij->ji", a, b)
+
+    assert equal_einsum("ij,ji->ji", a, b)
+
+    assert equal_einsum("ji,ji->ji", a, b)
+
+    assert equal_einsum("ji,ji->ij", a, b)
+
+    assert equal_einsum("ij,ij->ji", a, b)
 
 def test_broadcasting_add():
     a = np.array([[ 0.0,  0.0,  0.0],
