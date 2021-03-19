@@ -79,6 +79,12 @@ def test_einsum_reduction():
     # Matrix multiplication with transposed output and operand
     assert equal_einsum("ji,kj->ki", a, b)
 
+    a = np.random.randn(10,10,10).astype(np.float32)
+    b = np.random.randn(10,10,10).astype(np.float32)
+
+    # Batch matrix multiplication
+    assert equal_einsum("bij,bjk->bik", a, b)
+
 def test_einsum_with_no_reduction():
     a = np.random.randn(10,10).astype(np.float32)
     b = np.random.randn(10,10).astype(np.float32)
