@@ -102,11 +102,14 @@ class Device(object):
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
                 reduced_subscripts = set(x_subs) & set(y_subs) - set(out_subs)
 
-                xsort, ysort, outsort = (sorted(range(x.ndim), key=lambda k: subs[k]) for subs in (x_subs, y_subs, out_subs))
+                xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
+
+                # argsort
+                xsort, ysort, outsort = (sorted(range(len(subs)), key=lambda k: subs[k]) for subs in (x_subs, y_subs, out_subs))
 
                 # order of x and y is relative to outsort
-                xorder = range(x.ndim)[::[-1,1][outsort == xsort]]
-                yorder = range(y.ndim)[::[-1,1][outsort == ysort]]
+                xorder = range(x.ndim)[::[-1,1][outsort[0] == xsort[0]]]
+                yorder = range(y.ndim)[::[-1,1][outsort[0] == ysort[0]]]
 
                 # transpose operands based on order
                 x = x.transpose(xorder)
@@ -119,33 +122,58 @@ class Device(object):
                 assert len(reduced_subscripts) == 1, "reduction over multiple axis not implemented yet"
                 reduced_subscript = reduced_subscripts.pop()
 
-                xstrides = np.array(x.strides, dtype=np.int32) // 4
-                xstrides[xorder[x_subs.index(reduced_subscript)]] = 0
+                # reduced dimension in operands
+                reduced_axis_x = x_subs.index(reduced_subscript)
+                reduced_axis_y = y_subs.index(reduced_subscript)
 
-                ystrides = np.array(y.strides, dtype=np.int32) // 4
-                ystrides[yorder[y_subs.index(reduced_subscript)]] = 0
+                # corresponding stride
+                reduced_axis_stride_x = xstrides[reduced_axis_x]
+                reduced_axis_stride_y = ystrides[reduced_axis_y]
 
-                reduced_axis_x = outsort[x_subs.index(reduced_subscript)]
-                reduced_axis_y = outsort[y_subs.index(reduced_subscript)]
-                assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
+                assert x.shape[xorder[reduced_axis_x]] == y.shape[yorder[reduced_axis_y]]
                 reduced_axis_size = x.shape[reduced_axis_x]
 
+                # set stride of reduced dimension to 0 and sort
+                np.put(xstrides, reduced_axis_x, 0)
+                xstrides = xstrides[xorder]
+                np.put(ystrides, reduced_axis_y, 0)
+                ystrides = ystrides[yorder]
+
+                # extend strides with broadcasted dimensions if needed
+                broadcasted_subs_y = set(x_subs) - (set(y_subs) | set(out_subs))
+                if broadcasted_subs_y:
+                    axis = np.take(xorder, [x_subs.index(s) for s in broadcasted_subs_y])
+                    ystrides = np.insert(ystrides, axis, 0)
+
+                broadcasted_subs_x = set(y_subs) - (set(x_subs) | set(out_subs))
+                if broadcasted_subs_x:
+                    axis = np.take(yorder, [y_subs.index(s) for s in broadcasted_subs_x])
+                    xstrides = np.insert(xstrides, axis, 0)
+
+                # finally, deduce shape and strides for result
+                res_shape = [(s in x_subs and x.shape[xorder[x_subs.index(s)]]) \
+                          or (s in y_subs and y.shape[yorder[y_subs.index(s)]]) for s in out_subs]
+                res = cl.array.empty(Device.GPU.queue, tuple(res_shape), np.float32)
+                res = res.transpose(outsort)
+
+                reduced_ax, max_ndim, max_shape = max((reduced_axis_x, x.ndim, x.shape), \
+                                  (reduced_axis_y, y.ndim, y.shape), key=operator.itemgetter(1))
+                res_strides = res.ndim < max_ndim and tuple(np.insert(res.strides, reduced_ax, 0)) or res.strides
+                res_strides = np.array(res_strides, dtype=np.int32) // 4
+
                 # convert to opencl
-                reduced_axis_x = np.int32(reduced_axis_x)
                 reduced_axis_size = np.int32(reduced_axis_size)
-                reduced_axis_y = np.int32(reduced_axis_y)
                 x_strides = cl.array.to_device(Device.GPU.queue, xstrides)
                 y_strides = cl.array.to_device(Device.GPU.queue, ystrides)
 
-                res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
-                res = res.transpose(outsort)
+                reduced_axis_stride_x = np.int32(reduced_axis_stride_x)
+                reduced_axis_stride_y = np.int32(reduced_axis_stride_y)
 
-                # res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
-                strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
+                strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
                 # call kernel
-                kernel(res.shape, None, x.data, y.data, x_strides.data, y_strides.data, \
-                    reduced_axis_x, reduced_axis_y, reduced_axis_size, res.data, strides.data, strides.data)
+                kernel(max_shape, None, x.data, y.data, x_strides.data, y_strides.data, \
+                    reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, strides.data, strides.data)
 
                 return res
 
