@@ -169,11 +169,11 @@ class Device(object):
                 reduced_axis_stride_x = np.int32(reduced_axis_stride_x)
                 reduced_axis_stride_y = np.int32(reduced_axis_stride_y)
 
-                strides = cl.array.to_device(Device.GPU.queue, res_strides)
+                res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
                 # call kernel
                 kernel(max_shape, None, x.data, y.data, x_strides.data, y_strides.data, \
-                    reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, strides.data, strides.data)
+                    reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, res_strides.data)
 
                 return res
 

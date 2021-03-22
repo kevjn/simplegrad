@@ -111,10 +111,8 @@ void dot_forward(__global const float* x_g,
             __const int reduced_axis_stride_y,
             __const int reduced_axis_size,
             __global float* result,
-            __global const int* strides,
             __global const int* result_strides)
 {
-  // strides for x and y must be equal for now
 
   float accum = 0; // identity
 
