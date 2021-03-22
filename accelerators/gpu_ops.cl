@@ -107,8 +107,8 @@ void dot_forward(__global const float* x_g,
             __global const float* y_g,
             __global const int* x_strides,
             __global const int* y_strides,
-            __const int reduced_axis_x,
-            __const int reduced_axis_y,
+            __const int reduced_axis_stride_x,
+            __const int reduced_axis_stride_y,
             __const int reduced_axis_size,
             __global float* result,
             __global const int* strides,
@@ -129,7 +129,7 @@ void dot_forward(__global const float* x_g,
   // sum over k
   for (int k = 0; k < reduced_axis_size; k++)
   {
-    accum += x_g[k * strides[reduced_axis_x] + ix] * y_g[k * strides[reduced_axis_y] + iy];
+    accum += x_g[k * reduced_axis_stride_x + ix] * y_g[k * reduced_axis_stride_y + iy];
   }
 
   result[idx] = accum;
