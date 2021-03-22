@@ -140,12 +140,12 @@ class Device(object):
                 ystrides = ystrides[yorder]
 
                 # extend strides with broadcasted dimensions if needed
-                broadcasted_subs_y = set(x_subs) - (set(y_subs) | set(out_subs))
+                broadcasted_subs_y = len(y_subs) < len(x_subs) and set(x_subs) - set(y_subs)
                 if broadcasted_subs_y:
                     axis = np.take(xorder, [x_subs.index(s) for s in broadcasted_subs_y])
                     ystrides = np.insert(ystrides, axis, 0)
 
-                broadcasted_subs_x = set(y_subs) - (set(x_subs) | set(out_subs))
+                broadcasted_subs_x = len(x_subs) < len(y_subs) and set(y_subs) - set(x_subs)
                 if broadcasted_subs_x:
                     axis = np.take(yorder, [y_subs.index(s) for s in broadcasted_subs_x])
                     xstrides = np.insert(xstrides, axis, 0)
