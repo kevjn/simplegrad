@@ -104,18 +104,21 @@ class Device(object):
 
                 xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
 
-                # argsort
-                xsort, ysort, outsort = (sorted(range(len(subs)), key=lambda k: subs[k]) for subs in (x_subs, y_subs, out_subs))
+                # deduce output shape
+                res_shape = tuple((s in x_subs and x.shape[x_subs.index(s)]) \
+                          or (s in y_subs and y.shape[y_subs.index(s)]) for s in out_subs)
 
-                # order of x and y is relative to outsort
-                xorder = range(x.ndim)[::[-1,1][outsort[0] == xsort[0]]]
-                yorder = range(y.ndim)[::[-1,1][outsort[0] == ysort[0]]]
+                # insert any reduced subscripts in center of out_subs
+                L,R = ["".join(chr(c) for c in s) for s in np.array_split([ord(s) for s in out_subs], 2)]
+                out_subs = "".join((L, *reduced_subscripts, R))
 
-                # transpose operands based on order
-                x = x.transpose(xorder)
-                y = y.transpose(yorder)
+                # argsort operands relative to out_subs
+                xorder, yorder = (sorted(range(len(subs)), key=lambda k: out_subs.index(subs[k])) for subs in (x_subs, y_subs))
 
                 if not reduced_subscripts:
+                    x = x.transpose(xorder)
+                    y = y.transpose(yorder)
+
                     # standard multiplication
                     return Device.GPU.load_directly("mul", Device.GPU.Parser.binary)(x, y)
 
@@ -150,15 +153,12 @@ class Device(object):
                     axis = np.take(yorder, [y_subs.index(s) for s in broadcasted_subs_x])
                     xstrides = np.insert(xstrides, axis, 0)
 
-                # finally, deduce shape and strides for result
-                res_shape = [(s in x_subs and x.shape[xorder[x_subs.index(s)]]) \
-                          or (s in y_subs and y.shape[yorder[y_subs.index(s)]]) for s in out_subs]
-                res = cl.array.empty(Device.GPU.queue, tuple(res_shape), np.float32)
-                res = res.transpose(outsort)
+                res = cl.array.empty(Device.GPU.queue, res_shape, np.float32)
 
-                reduced_ax, max_ndim, max_shape = max((reduced_axis_x, x.ndim, x.shape), \
-                                  (reduced_axis_y, y.ndim, y.shape), key=operator.itemgetter(1))
-                res_strides = res.ndim < max_ndim and tuple(np.insert(res.strides, reduced_ax, 0)) or res.strides
+                max_ndim, max_shape = max((x.ndim, x.shape), (y.ndim, y.shape), key=operator.itemgetter(1))
+
+                res_strides = not res.ndim < max_ndim and res.strides or \
+                    tuple(np.insert(res.strides, out_subs.index(reduced_subscript), 0))
                 res_strides = np.array(res_strides, dtype=np.int32) // 4
 
                 # convert to opencl
