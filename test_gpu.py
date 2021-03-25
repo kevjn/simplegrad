@@ -85,6 +85,29 @@ def test_einsum_reduction():
     # Batch matrix multiplication
     assert equal_einsum("bij,bjk->bik", a, b)
 
+def test_einsum_reduction_with_unequal_ndim():
+    a = np.random.randn(10,10,10).astype(np.float32)
+    b = np.random.randn(10,10).astype(np.float32)
+
+    assert equal_einsum("ijk,jk->ik", a, b)
+
+    assert equal_einsum("ijk,ji->ik", a, b)
+
+    assert equal_einsum("ijk,ij->ik", a, b)
+
+    assert equal_einsum("ij,kij->ik", b, a)
+
+    assert equal_einsum("kij,ij->ik", a, b)
+
+    assert equal_einsum("kji,ij->ik", a, b)
+
+    assert equal_einsum("kji,ji->ik", a, b)
+
+    assert equal_einsum("jik,ji->ik", a, b)
+
+    # assert equal_einsum("jki,ji->ik", a, b) # TODO: fix this
+    # assert equal_einsum("ijk,jl->ik", a, b) # TODO: fix this
+
 def test_einsum_with_no_reduction():
     a = np.random.randn(10,10).astype(np.float32)
     b = np.random.randn(10,10).astype(np.float32)
