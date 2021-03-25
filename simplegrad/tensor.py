@@ -287,7 +287,7 @@ class Tensor(object):
             return wrapper
 
         @functools.wraps(expr)
-        def wrapper(self, operand, parsers=(Device.Parser.binary,)*2, **kwargs):
+        def wrapper(self, operand, parsers=None, **kwargs):
             @functools.wraps(expr)
             def expr_wrapper(**kwargs):
                 forward, backward = expr(**kwargs)
@@ -296,7 +296,7 @@ class Tensor(object):
                 return forward, propagate(unbroadcast(backward), operand)
             args = self.val, operand.val
             return Tensor.operation(expr_wrapper)(self, *args, \
-                parsers=parsers, **kwargs)
+                parsers=parsers or (Device.Parser.binary,)*2, **kwargs)
         return wrapper
 
     def binary_reduction_operation(expr):
