@@ -33,6 +33,33 @@ __kernel void add_forward(__global const float *x_g,
   res_g[i] = x_g[ix] + y_g[iy];
 }
 
+__kernel void max_forward(__global const float* buffer,
+            __global const int* strides,
+            __global const int* anchored_axes,
+            __const int reduced_axis,
+            __const int reduced_axis_size,
+            __global float* result,
+            __global const int* result_strides)
+{
+  float accum = -INFINITY; // identity
+
+  int offset = 0;
+  int idx = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    offset += get_global_id(dim) * strides[anchored_axes[dim]];
+    idx += get_global_id(dim) * result_strides[dim];
+  }
+
+  // sum over k
+  for (int k = 0; k < reduced_axis_size; k++)
+  {
+    accum = max(accum, buffer[k * strides[reduced_axis] + offset]);
+  }
+
+  result[idx] = accum;
+}
+
 //-------------------------------------------------------------------------------
 // 
 //  kernel: sum_forward
@@ -51,7 +78,6 @@ __kernel void add_forward(__global const float *x_g,
 //         __global const int* anchored_axes: indicies for axes which are not being reduced
 //         __const int reduced_axis: the axis being reduced
 //         __const int reduced_axis_size: length of the reduced axis
-//         __const int result_ndims: result dimension (this might be same as get_global_size(0))
 //
 //  output: __global float* result: the output array
 //          __global const int* reult_strides: strides for the output array (float aligned)
