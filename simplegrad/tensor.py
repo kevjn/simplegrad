@@ -100,6 +100,16 @@ class Device(object):
                 # combines broadcasting and reduction parsing
                 assert subscripts
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
+
+                # parse ellipsis if needed
+                if '...' in subscripts:
+                    x_subs, y_subs = (subs.replace('...', str().join(map(chr, \
+                        range(97, 97 + nd-sum(map(len, subs.split('...'))))))) \
+                        for nd, subs in [(x.ndim, x_subs), (y.ndim, y_subs)])
+
+                    # TODO: this will not work in all cases
+                    out_subs = max(x_subs, y_subs, key=len)
+
                 reduced_subscripts = set(x_subs) & set(y_subs) - set(out_subs)
 
                 xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
