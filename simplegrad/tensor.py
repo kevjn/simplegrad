@@ -376,10 +376,9 @@ class Tensor(object):
                 mask = mask * dv.reshape(mask.shape[0], 1)
                 return mask.reshape(x.shape)
 
-            idx = tuple(np.argwhere(x == x.max())[0])
             mask = np.zeros_like(x)
-            mask[idx] = 1
-            return mask*dv
+            mask[x == out] = dv
+            return mask
 
         return forward, backward
 
