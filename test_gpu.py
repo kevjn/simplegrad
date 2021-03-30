@@ -155,6 +155,10 @@ def test_broadcasting_add():
     b = np.random.randn(2, 3, 4)
     assert equal_add(a, b)
 
+    a = np.random.randn(1)
+    b = np.random.randn(3,3,3)
+    assert equal_add(a, b)
+
 def test_simple_backward_with_broadcasting():
     a = np.random.randn(10,10)
     w = np.random.randn(10,10,10)
