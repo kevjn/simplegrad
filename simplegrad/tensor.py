@@ -82,12 +82,12 @@ class Device(object):
                 res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
 
-                xstrides = (np.equal(np.pad(x.shape, (len(res.shape)-len(x.shape),0)), res.shape) * \
-                            np.pad(x.strides, (len(res.shape)-len(x.shape),0)) // 4).astype(np.int32)
+                xstrides = (np.equal(np.pad(x.shape, (res.ndim-x.ndim, 0)), res.shape) * \
+                            np.pad(x.strides, (res.ndim-x.ndim, 0)) // 4).astype(np.int32)
                 xstrides = cl.array.to_device(Device.GPU.queue, xstrides)
 
-                ystrides = (np.equal(np.pad(y.shape, (len(res.shape)-len(y.shape),0)), res.shape) * \
-                            np.pad(y.strides, (len(res.shape)-len(y.shape),0)) // 4).astype(np.int32)
+                ystrides = (np.equal(np.pad(y.shape, (res.ndim-y.ndim, 0)), res.shape) * \
+                            np.pad(y.strides, (res.ndim-y.ndim, 0)) // 4).astype(np.int32)
                 ystrides = cl.array.to_device(Device.GPU.queue, ystrides)
 
                 args = x.data, xstrides.data, y.data, ystrides.data, \
