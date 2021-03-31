@@ -18,7 +18,7 @@ class Device(object):
 
     def load(cpu_expr, *parsers, **kwargs):
         # use cpu forward/backward fxn as default
-        return cpu_expr(**kwargs) 
+        return *(Device.operation_wrapper(op, parser) for op, parser in zip(cpu_expr(**kwargs), parsers)),
 
     def load_directly(name, parser, backward=False, **kwargs):
         # get unwrapped function
@@ -31,6 +31,12 @@ class Device(object):
     def operation_wrapper(op, parser, **kwargs):
         def wrapper(*args):
             return parser(op, *args, **kwargs)
+        return wrapper
+
+    def drop_output_wrapper(parser):
+        def wrapper(*args):
+            *args, out = args
+            return parser(*args)
         return wrapper
 
     class CPU:
@@ -249,34 +255,31 @@ class Tensor(object):
         # implicit gradient creation
         self._backward(Device.to_device(np.ones(self.shape)))
         
-    def operation(expr):
+    def operation(expr, *, parsers):
         @functools.wraps(expr)
-        def wrapper(self, *args, parsers=(Device.Parser.default,)*2, **kwargs):
+        def wrapper(self, *args, **kwargs):
             forward, backward = Device.load(expr, *parsers, **kwargs)
 
-            # save intermediate variables for backward pass
-            self.arguments.append(args)
-            self.backward_fxns.append(backward)
-
             self.val = forward(*args)
+
+            # save intermediate variables and output for backward pass
+            self.arguments.append((*args, self.val))
+            self.backward_fxns.append(backward)
 
             return self
         return wrapper
 
-    def unary_operation(expr):
-        @functools.wraps(expr)
-        def wrapper(self, **kwargs):
-            return Tensor.operation(expr)(self, self.val, **kwargs)
-        return wrapper
+    def unary_operation(forward_parser=Device.Parser.default,
+                        backward_parser=Device.drop_output_wrapper(Device.Parser.default)):
+        def decorator(expr):
+            @functools.wraps(expr)
+            def wrapper(self, **kwargs):
+                return Tensor.operation(expr, parsers=(forward_parser, backward_parser))(self, self.val, **kwargs)
+            return wrapper
+        return decorator
 
-    def unary_reduction_operation(expr):
-        @functools.wraps(expr)
-        def wrapper(self, *args, **kwargs):
-            return Tensor.unary_operation(expr)(self, *args, \
-                parsers=(Device.Parser.reduction, Device.Parser.binary), **kwargs)
-        return wrapper
-
-    def binary_operation(expr):
+    def binary_operation(forward_parser=Device.Parser.binary, 
+                         backward_parser=Device.drop_output_wrapper(Device.Parser.binary)):
         def unbroadcast(backward):
             def reduce(grad, shape):
                 _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
@@ -296,48 +299,39 @@ class Tensor(object):
                 return dx
             return wrapper
 
-        @functools.wraps(expr)
-        def wrapper(self, operand, parsers=None, **kwargs):
+        def decorator(expr):
             @functools.wraps(expr)
-            def expr_wrapper(**kwargs):
-                forward, backward = expr(**kwargs)
-                # unbroadcast results from backward pass and
-                # propagate back on operand
-                return forward, propagate(unbroadcast(backward), operand)
-            args = self.val, operand.val
-            return Tensor.operation(expr_wrapper)(self, *args, \
-                parsers=parsers or (Device.Parser.binary,)*2, **kwargs)
-        return wrapper
-
-    def binary_reduction_operation(expr):
-        @functools.wraps(expr)
-        def wrapper(self, *args, **kwargs):
-            return Tensor.binary_operation(expr)(self, *args, \
-                parsers=(Device.Parser.binary_reduction, Device.Parser.binary), **kwargs)
-        return wrapper
+            def wrapper(self, operand, **kwargs):
+                @functools.wraps(expr)
+                def expr_wrapper(**kwargs):
+                    forward, backward = expr(**kwargs)
+                    # unbroadcast results from backward pass and
+                    # propagate back on operand
+                    return forward, propagate(unbroadcast(backward), operand)
+                args = self.val, operand.val
+                return Tensor.operation(expr_wrapper, parsers=(forward_parser, backward_parser))(self, *args, **kwargs)
+            return wrapper
+        return decorator
 
     operation.unary = unary_operation
-    operation.unary.reduction = unary_reduction_operation
     operation.binary = binary_operation
-    operation.binary.reduction = binary_reduction_operation
 
     # ========== unary ops ==========
 
-    @operation.unary
+    @operation.unary(backward_parser=Device.Parser.binary)
     def exp():
 
         def forward(x):
             return np.exp(x)
 
-        def backward(dv, x):
-            return dv * np.exp(x)
+        def backward(dv, x, out):
+            return dv * out
 
         return forward, backward
 
-    @operation.unary
+    @operation.unary()
     def log():
         def forward(x):
-            # x = np.clip(x, 1e-7, 1 - 1e-7)
             return np.log(x)
 
         def backward(dv, x):
@@ -347,8 +341,8 @@ class Tensor(object):
 
     # ========== reduce ops ==========
 
-    @operation.unary.reduction
-    def sum(axis=None, keepdims=False): # TODO: implement this using einsum "ij -> j" will sum along axis=0
+    @operation.unary(forward_parser=Device.Parser.reduction)
+    def sum(axis=None, keepdims=False):
 
         def forward(x):
             return np.sum(x, axis=axis, keepdims=keepdims)
@@ -360,13 +354,13 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation.unary
+    @operation.unary(forward_parser=Device.Parser.reduction, backward_parser=Device.Parser.binary)
     def max(axis=None, keepdims=False):
 
         def forward(x):
             return np.max(x, axis=axis, keepdims=keepdims)
         
-        def backward(dv, x):
+        def backward(dv, x, out):
             if axis:
                 area = np.prod(np.take(x.shape, axis))
                 xr = x.reshape(-1, area)
@@ -395,7 +389,7 @@ class Tensor(object):
         
         return forward, backward
 
-    @operation.binary
+    @operation.binary()
     def pow():
 
         def forward(x, y):
@@ -407,7 +401,7 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation.binary
+    @operation.binary()
     def add():
         def forward(x, y):
             return x + y
@@ -419,8 +413,8 @@ class Tensor(object):
 
     # ========== processing ops ==========
 
-    @operation.binary.reduction
-    def dot(subscripts='i...j,j...h->i...h'):
+    @operation.binary(forward_parser=Device.Parser.binary_reduction)
+    def dot(subscripts='i...j,j...k->i...k'):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
 
@@ -437,12 +431,10 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation.unary
+    @operation.unary(backward_parser=Device.Parser.binary)
     def window_view(kernel_size=(2,2), stride=1):
-        ws = None # windows
 
         def forward(x):
-            nonlocal ws
             N, cin, *in_shape, kdims = *x.shape, len(kernel_size)
 
             # get window shape and strides
@@ -451,16 +443,15 @@ class Tensor(object):
             out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
 
             # return window view
-            return (ws := np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides))
+            return np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
         
-        def backward(dv, x):
-            nonlocal ws
-            assert dv.shape == ws.shape
-            ws[:] = 0
+        def backward(dv, x, out):
+            assert dv.shape == out.shape
+            out[:] = 0
             # can this be vectorized?
-            for i in np.ndindex(ws.shape):
+            for i in np.ndindex(out.shape):
                 # accumulate gradient
-                ws[i] += dv[i]
+                out[i] += dv[i]
 
             return x
 
