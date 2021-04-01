@@ -13,8 +13,21 @@ class Device(object):
         Device.load = device.load
         Device.load_directly = device.load_directly
         Device.to_device = device.to_device
-        # argument parser
+        # set argument parser
         Device.Parser = device.Parser
+        # manually rebind parsers for all operations
+        parse_eval = lambda x: 'drop_output' in x.__qualname__ and \
+                     Device.drop_output_wrapper(parse_eval(x.__closure__[0].cell_contents)) or \
+                     eval(".".join(np.take(x.__qualname__.split('.'), [0,2,3])))
+        
+        for op in [Tensor.exp, Tensor.log, Tensor.sum, Tensor.max, 
+                   Tensor.relu, Tensor.pow, Tensor.add, Tensor.dot, 
+                   Tensor.window_view]:
+            backward_parser, _, forward_parser, *__ = (c.cell_contents for c in op.__closure__)
+            backward_parser, forward_parser = *map(parse_eval, [backward_parser, forward_parser]),
+            op.__closure__[0].cell_contents = backward_parser
+            op.__closure__[2].cell_contents = forward_parser
+
 
     def load(cpu_expr, *parsers, **kwargs):
         # use cpu forward/backward fxn as default
@@ -34,9 +47,9 @@ class Device(object):
         return wrapper
 
     def drop_output_wrapper(parser):
-        def wrapper(*args):
+        def wrapper(*args, **kwargs):
             *args, out = args
-            return parser(*args)
+            return parser(*args, **kwargs)
         return wrapper
 
     class CPU:
@@ -44,7 +57,15 @@ class Device(object):
             def default(op, *args, **kwargs):
                 return op(*args)
 
-        Parser.reduction = Parser.binary = Parser.binary_reduction = Parser.default
+            def reduction(op, *args, **kwargs):
+                return op(*args)
+
+            def binary(op, *args, **kwargs):
+                return op(*args)
+
+            def binary_reduction(op, *args, **kwargs):
+                return op(*args)
+
     Parser = CPU.Parser
 
     class GPU:
@@ -67,7 +88,7 @@ class Device(object):
 
         def load(cpu_expr, *parsers, **kwargs):
             # fall back on cpu if no implementation exists, TODO: memoize this
-            return *(Device.operation_wrapper(a or b, a and parser or Device.CPU.Parser.default, **kwargs) \
+            return *(Device.operation_wrapper(a or b, a and parser or Device.drop_output_wrapper(Device.CPU.Parser.default), **kwargs) \
                 for a,b,parser in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs), parsers)),
 
         def load_directly(name, parser, backward=False, **kwargs):
@@ -102,7 +123,7 @@ class Device(object):
                 kernel(res.shape, None, *args)
                 return res
 
-            def binary_reduction(kernel, x, y, subscripts=None):
+            def binary_reduction(kernel, x, y, subscripts="ij,jk->ik"):
                 # combines broadcasting and reduction parsing
                 assert subscripts
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
@@ -352,7 +373,8 @@ class Tensor(object):
 
     # ========== reduce ops ==========
 
-    @operation.unary(forward_parser=Device.Parser.reduction)
+    @operation.unary(forward_parser=Device.Parser.reduction, 
+                     backward_parser=Device.drop_output_wrapper(Device.Parser.binary))
     def sum(axis=None, keepdims=False):
 
         def forward(x):
