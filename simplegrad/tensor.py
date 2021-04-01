@@ -214,8 +214,13 @@ class Device(object):
 
                 return res
 
-            def reduction(kernel, x, axis=None, **kwargs):
-                if axis is None and (axis := tuple(range(x.ndim))) or type(axis) is tuple:
+            def axis(x, ax):
+                return ax is None and (*range(x.ndim),) or type(ax) is tuple and ax or ax < 0 and x.ndim - ax or ax
+
+            def reduction(kernel, x, axis=None, keepdims=False, **kwargs):
+                axis = Device.Parser.axis(x, axis)
+
+                if type(axis) is tuple:
                     for ax in sorted(axis, reverse=True):
                         x = Device.GPU.Parser.reduction(kernel, x, axis=ax)
                     return x
