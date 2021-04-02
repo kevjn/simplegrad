@@ -237,7 +237,7 @@ class Device(object):
 
                 anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
 
-                res = cl.array.empty(Device.GPU.queue, tuple(global_work_size), np.float32)
+                res = cl.array.empty(Device.GPU.queue, (*global_work_size, *[1]*keepdims), np.float32)
                 res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
                 

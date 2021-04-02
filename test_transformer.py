@@ -410,6 +410,12 @@ class Transformer:
                self.out_proj_weight, self.out_proj_bias, \
                self.layernorm_weight, self.layernorm_bias
 
+    def plot_attention(self):
+        # plots the attention of the first batch and head
+        attn = self.attention[0,0]
+        plt.imshow(attn)
+        plt.show()
+
     def forward(self, x: Tensor):
         """
         Inputs:
@@ -442,6 +448,7 @@ class Transformer:
         if mask:
             attn_logits.add(mask)
         attn = attn_logits.softmax()
+        self.attention = attn.val
 
         values = attn.dot(v, subscripts="ijkl,ijlm->ijkm")
         output = values.dot(self.out_proj_weight, subscripts="ijkl,mjl->kim").add(self.out_proj_bias)
@@ -501,3 +508,8 @@ def test_seq2seq_model():
     acc = (out.val.argmax(axis=-1) == y).astype(np.float32).mean()
 
     assert acc == 1.0
+
+    # plot attention map
+    # It should resemble a diagonal line, since each
+    # token attends to the token on the flipside
+    model.plot_attention()
