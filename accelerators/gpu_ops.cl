@@ -13,6 +13,48 @@ __kernel void relu_backward(__global const float *dv_g, __global const float *a_
   res_g[gid] = dv * (a >= 0);
 }
 
+__kernel void pow_forward(__global const float *x_g,
+                          __global const int* x_strides,
+                          __global const float *y_g, 
+                          __global const int* y_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  int i = 0, ix = 0, iy = 0;
+  for(int dim = 0; dim < res_dims; dim++)
+  {
+    i += get_global_id(dim) * res_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  res_g[i] = pow(x_g[ix], y_g[iy]);
+}
+
+__kernel void pow_backward(__global const float *dv_g,
+                          __global const int* dv_strides,
+                          __global const float *x_g, 
+                          __global const int* x_strides,
+                          __global const float *y_g, 
+                          __global const int* y_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  int i = 0, idv = 0, ix = 0, iy = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    i += get_global_id(dim) * res_strides[dim];
+    idv += get_global_id(dim) * dv_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  res_g[i] = dv_g[idv] * y_g[iy] * pow(x_g[ix], y_g[iy] - (float) 1.0);
+}
+
+
 __kernel void add_forward(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
