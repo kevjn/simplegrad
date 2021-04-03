@@ -11,29 +11,44 @@ class Device(object):
     def load_device(device):
         device()
         Device.load = device.load
-        Device.load_directly = device.load_directly
         Device.to_device = device.to_device
         # set argument parser
         Device.Parser = device.Parser
-        # manually rebind parsers for all operations
-        parse_eval = lambda x: 'drop_output' in x.__qualname__ and \
-                     Device.drop_output_wrapper(parse_eval(x.__closure__[0].cell_contents)) or \
-                     eval(".".join(np.take(x.__qualname__.split('.'), [0,2,3])))
+        # manually rebind expressions for all operations
+        unpack_ops = lambda name, f, b: lambda ops=Device.GPU.ops[name], **kwargs: \
+                        (f(ops[0], **kwargs), b(ops[1], **kwargs))
         
-        for op in [Tensor.exp, Tensor.log, Tensor.sum, Tensor.max, 
-                   Tensor.relu, Tensor.pow, Tensor.add, Tensor.dot, 
-                   Tensor.window_view]:
-            backward_parser, _, forward_parser, *__ = (c.cell_contents for c in op.__closure__)
-            backward_parser, forward_parser = *map(parse_eval, [backward_parser, forward_parser]),
-            op.__closure__[0].cell_contents = backward_parser
-            op.__closure__[2].cell_contents = forward_parser
+        # set default unary parsers
+        for op in [Tensor.relu, Tensor.exp, Tensor.log, Tensor.window_view]:
+            f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.default)
+            b = functools.partial(Device.Parser.operation_wrapper, Device.Parser.default)
+            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
 
+        # set unary reduce parsers
+        for op in [Tensor.sum, Tensor.max]:
+            f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.reduction)
+            b = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
+            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
 
-    def load(cpu_expr, *parsers, **kwargs):
-        # use cpu forward/backward fxn as default
-        return *(Device.operation_wrapper(op, parser) for op, parser in zip(cpu_expr(**kwargs), parsers)),
+        # set default binary parsers
+        for op in [Tensor.pow]:
+            f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
+            b = functools.partial(Device.Parser.backward_wrapper, Device.Parser.binary)
+            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
 
-    def load_directly(name, parser, backward=False, **kwargs):
+        # special case for add operation (does nothing)
+        for op in [Tensor.add]:
+            f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
+            b = functools.partial(Device.Parser.add_backward_wrapper, Device.Parser.binary)
+            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+
+        # set binary reduce (einsum) parsers
+        for op in [Tensor.dot]:
+            f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary_reduction)
+            b = functools.partial(Device.Parser.einsum_backward_wrapper, Device.Parser.binary_reduction)
+            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+
+    def load(name, backward=False, **kwargs):
         # get unwrapped function
         f = getattr(Tensor, name).__wrapped__
         return f(**kwargs)[backward]
@@ -41,32 +56,8 @@ class Device(object):
     def to_device(x):
         return np.array(x, dtype=np.float32)
 
-    def operation_wrapper(op, parser, **kwargs):
-        def wrapper(*args):
-            return parser(op, *args, **kwargs)
-        return wrapper
-
-    def drop_output_wrapper(parser):
-        def wrapper(*args, **kwargs):
-            *args, out = args
-            return parser(*args, **kwargs)
-        return wrapper
-
     class CPU:
-        class Parser(object):
-            def default(op, *args, **kwargs):
-                return op(*args)
-
-            def reduction(op, *args, **kwargs):
-                return op(*args)
-
-            def binary(op, *args, **kwargs):
-                return op(*args)
-
-            def binary_reduction(op, *args, **kwargs):
-                return op(*args)
-
-    Parser = CPU.Parser
+        pass
 
     class GPU:
         def __init__(self):
@@ -86,18 +77,43 @@ class Device(object):
             Device.GPU.ops = defaultdict(lambda: (None, None), \
                 {name : tuple(v) for name, v in ops.items()})
 
-        def load(cpu_expr, *parsers, **kwargs):
-            # fall back on cpu if no implementation exists, TODO: memoize this
-            return *(Device.operation_wrapper(a or b, a and parser or Device.drop_output_wrapper(Device.CPU.Parser.default), **kwargs) \
-                for a,b,parser in zip(Device.GPU.ops[cpu_expr.__name__], cpu_expr(**kwargs), parsers)),
+        def load(name, backward=False, **kwargs):
+            raise NotImplementedError
 
-        def load_directly(name, parser, backward=False, **kwargs):
-            return Device.operation_wrapper(Device.GPU.ops[name][backward], parser, **kwargs)
-
-        def to_device(x: np.ndarray):
-            return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
+        def to_device(x):
+            return cl.array.to_device(Device.GPU.queue, x.astype(np.float32)) \
+                if isinstance(x, np.ndarray) else x.copy() \
+                if isinstance(x, cl.array.Array) else \
+                cl.array.to_device(Device.GPU.queue, np.array([x], dtype=np.float32))
 
         class Parser(object):
+
+            def operation_wrapper(parser, op, **kwargs):
+                def wrapper(*args):
+                    return parser(op, *args, **kwargs)
+                return wrapper
+
+            def backward_wrapper(parser, op, **kwargs):
+                def wrapper(*args):
+                    dv = parser(op, *args, **kwargs)
+                    return dv, dv
+                return wrapper
+
+            def add_backward_wrapper(*_):
+                def wrapper(dv, *_):
+                    return dv, dv
+                return wrapper
+
+            def einsum_backward_wrapper(parser, op, subscripts):
+                def wrapper(*args):
+                    dv, x, y = args
+                    input_subs, output_subs = subscripts.split('->')
+                    x_subs, y_subs = input_subs.split(',')
+                    dx = parser(op, dv, y, subscripts=f"{output_subs},{y_subs}->{x_subs}")
+                    dy = parser(op, dv, x, subscripts=f"{output_subs},{x_subs}->{y_subs}")
+
+                    return dy, dx
+                return wrapper
 
             def default(kernel, *args, **kwargs):
                 # allocate output buffer on device
@@ -105,21 +121,18 @@ class Device(object):
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
-            def binary(kernel, x, y, **kwargs):
-                res = cl.array.empty(Device.GPU.queue, np.broadcast_shapes(x.shape, y.shape), np.float32)
+            def binary(kernel, *args, **kwargs):
+                res_shape = np.broadcast_shapes(*(x.shape for x in args))
+                res = cl.array.empty(Device.GPU.queue, res_shape, np.float32)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
 
-                xstrides = (np.equal(np.pad(x.shape, (res.ndim-x.ndim, 0)), res.shape) * \
-                            np.pad(x.strides, (res.ndim-x.ndim, 0)) // 4).astype(np.int32)
-                xstrides = cl.array.to_device(Device.GPU.queue, xstrides)
+                strides = ((cl.array.to_device(Device.GPU.queue, 
+                            (np.equal(np.pad(x.shape, (res.ndim-x.ndim, 0)), res.shape) * 
+                            np.pad(x.strides, (res.ndim-x.ndim, 0)) // 4).astype(np.int32)).data)
+                            for x in args)
 
-                ystrides = (np.equal(np.pad(y.shape, (res.ndim-y.ndim, 0)), res.shape) * \
-                            np.pad(y.strides, (res.ndim-y.ndim, 0)) // 4).astype(np.int32)
-                ystrides = cl.array.to_device(Device.GPU.queue, ystrides)
+                args = it.chain(*zip((a.data for a in args), strides), (res.data, np.int32(res.ndim), res_strides.data))
 
-                args = x.data, xstrides.data, y.data, ystrides.data, \
-                        res.data, np.int32(res.ndim), res_strides.data
-                
                 kernel(res.shape, None, *args)
                 return res
 
@@ -215,7 +228,7 @@ class Device(object):
                 return res
 
             def axis(x, ax):
-                return ax is None and (*range(x.ndim),) or type(ax) is tuple and ax or ax < 0 and x.ndim - ax or ax
+                return ax is None and (*range(x.ndim),) or type(ax) is tuple and ax or ax < 0 and x.ndim + ax or ax
 
             def reduction(kernel, x, axis=None, keepdims=False, **kwargs):
                 axis = Device.Parser.axis(x, axis)
@@ -281,31 +294,29 @@ class Tensor(object):
         # implicit gradient creation
         self._backward(Device.to_device(np.ones(self.shape)))
         
-    def operation(expr, *, parsers):
+    def operation(expr, *, use_output):
         @functools.wraps(expr)
         def wrapper(self, *args, **kwargs):
-            forward, backward = Device.load(expr, *parsers, **kwargs)
+            forward, backward = expr(**kwargs)
 
             self.val = forward(*args)
 
-            # save intermediate variables and output for backward pass
-            self.arguments.append((*args, self.val))
+            # save intermediate variables and (output) for backward pass
+            self.arguments.append(args + (self.val,) * use_output)
             self.backward_fxns.append(backward)
 
             return self
         return wrapper
 
-    def unary_operation(forward_parser=Device.Parser.default,
-                        backward_parser=Device.drop_output_wrapper(Device.Parser.default)):
+    def unary_operation(use_output=False):
         def decorator(expr):
             @functools.wraps(expr)
             def wrapper(self, **kwargs):
-                return Tensor.operation(expr, parsers=(forward_parser, backward_parser))(self, self.val, **kwargs)
+                return Tensor.operation(expr, use_output=use_output)(self, self.val, **kwargs)
             return wrapper
         return decorator
 
-    def binary_operation(forward_parser=Device.Parser.binary, 
-                         backward_parser=Device.drop_output_wrapper(Device.Parser.binary)):
+    def binary_operation():
         def unbroadcast(backward):
             def reduce(grad, shape):
                 _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
@@ -313,14 +324,15 @@ class Tensor(object):
                 axes = *np.arange(grad.ndim)[idx],
                 if not axes:
                     return grad
-                return Device.load_directly("sum", Device.Parser.reduction, axis=axes)(grad).reshape(shape)
-            def wrapper(dv, x, y):
-                return *it.starmap(reduce, zip(backward(dv, x, y), (y.shape, x.shape))),
+                return Device.load("sum", axis=axes)(grad).reshape(shape)
+            def wrapper(*args, shapes):
+                return *it.starmap(reduce, zip(backward(*args), shapes)),
             return wrapper
 
         def propagate(backward, operand):
-            def wrapper(dv, x, y):
-                dy, dx = backward(dv, x, y)
+            def wrapper(*args):
+                x, y = args[1:3]
+                dy, dx = backward(*args, shapes=(y.shape, x.shape))
                 operand._backward(dy)
                 return dx
             return wrapper
@@ -335,11 +347,11 @@ class Tensor(object):
                     # propagate back on operand
                     return forward, propagate(unbroadcast(backward), operand)
                 args = self.val, operand.val
-                return Tensor.operation(expr_wrapper, parsers=(forward_parser, backward_parser))(self, *args, **kwargs)
+                return Tensor.operation(expr_wrapper, use_output=False)(self, *args, **kwargs)
             return wrapper
         return decorator
 
-    operation.unary = unary_operation
+    operation.unary = unary_operation 
     operation.binary = binary_operation
 
     # ========== unary ops ==========
@@ -355,7 +367,7 @@ class Tensor(object):
         
         return forward, backward
 
-    @operation.unary(backward_parser=Device.Parser.binary)
+    @operation.unary(use_output=True)
     def exp():
 
         def forward(x):
@@ -378,8 +390,7 @@ class Tensor(object):
 
     # ========== reduce ops ==========
 
-    @operation.unary(forward_parser=Device.Parser.reduction, 
-                     backward_parser=Device.drop_output_wrapper(Device.Parser.binary))
+    @operation.unary()
     def sum(axis=None, keepdims=False):
 
         def forward(x):
@@ -392,7 +403,7 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation.unary(forward_parser=Device.Parser.reduction, backward_parser=Device.Parser.binary)
+    @operation.unary(use_output=True)
     def max(axis=None, keepdims=False):
 
         def forward(x):
@@ -440,7 +451,7 @@ class Tensor(object):
 
     # ========== processing ops ==========
 
-    @operation.binary(forward_parser=Device.Parser.binary_reduction)
+    @operation.binary()
     def dot(subscripts='i...j,j...k->i...k'):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
@@ -458,7 +469,7 @@ class Tensor(object):
 
         return forward, backward
 
-    @operation.unary(backward_parser=Device.Parser.binary)
+    @operation.unary(use_output=True)
     def window_view(kernel_size=(2,2), stride=1):
 
         def forward(x):
