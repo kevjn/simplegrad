@@ -15,38 +15,39 @@ class Device(object):
         # set argument parser
         Device.Parser = device.Parser
         # manually rebind expressions for all operations
-        unpack_ops = lambda name, f, b: lambda ops=Device.GPU.ops[name], **kwargs: \
+        unpack_ops = lambda ops, f, b: lambda ops=ops, **kwargs: \
                         (f(ops[0], **kwargs), b(ops[1], **kwargs))
         
         # set default unary parsers
         for op in [Tensor.relu, Tensor.exp, Tensor.log, Tensor.window_view]:
             f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.default)
             b = functools.partial(Device.Parser.operation_wrapper, Device.Parser.default)
-            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+            op.__closure__[0].cell_contents = unpack_ops(Device.GPU.ops[op.__name__], f, b)
 
         # set unary reduce parsers
         for op in [Tensor.sum, Tensor.max]:
             f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.reduction)
             b = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
-            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+            op.__closure__[0].cell_contents = unpack_ops(Device.GPU.ops[op.__name__], f, b)
 
         # set default binary parsers
         for op in [Tensor.pow]:
             f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
             b = functools.partial(Device.Parser.backward_wrapper, Device.Parser.binary)
-            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+            op.__closure__[0].cell_contents = unpack_ops(Device.GPU.ops[op.__name__], f, b)
 
         # special case for add operation (does nothing)
         for op in [Tensor.add]:
             f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary)
             b = functools.partial(Device.Parser.add_backward_wrapper, Device.Parser.binary)
-            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+            op.__closure__[0].cell_contents = unpack_ops(Device.GPU.ops[op.__name__], f, b)
 
         # set binary reduce (einsum) parsers
         for op in [Tensor.dot]:
             f = functools.partial(Device.Parser.operation_wrapper, Device.Parser.binary_reduction)
             b = functools.partial(Device.Parser.einsum_backward_wrapper, Device.Parser.binary_reduction)
-            op.__closure__[0].cell_contents = unpack_ops(op.__name__, f, b)
+            ops = Device.GPU.ops[op.__name__]
+            op.__closure__[0].cell_contents = unpack_ops((ops[0], ops[0]), f, b)
 
     def load(name, backward=False, **kwargs):
         # get unwrapped function
