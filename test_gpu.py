@@ -171,3 +171,14 @@ def test_simple_backward_with_broadcasting():
     assert np.allclose(tensor.val.get(), tensor_p.data.numpy())
     assert np.allclose(tensor.grad.get(), t_p.grad.data.numpy())
     assert np.allclose(w_s.grad.get(), w_p.grad.data.numpy())
+
+def test_pow_backward_pass():
+    a = np.random.randn(10,10)
+
+    tp = torch.tensor(a, requires_grad=True)
+    tp.pow(torch.tensor(2)).sum().backward()
+
+    ts = Tensor(a).pow(Tensor(2))
+    ts.backward()
+
+    np.allclose(tp.grad.data.numpy(), ts.grad.get())
