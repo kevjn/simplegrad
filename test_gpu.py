@@ -182,3 +182,38 @@ def test_pow_backward_pass():
     ts.backward()
 
     np.allclose(tp.grad.data.numpy(), ts.grad.get())
+
+def test_forward_and_backward_for_simple_classifier():
+    X = np.random.randn(3000, 2)
+    w0 = np.random.randn(2,64)
+    b0 = np.random.randn(64)
+    w1 = np.random.randn(64, 3)
+    b1 = np.random.randn(3)
+    y = np.random.randn(3000, 3)
+
+    # ========== simplegrad ==========
+    outs = Tensor(X).dot(w0s := Tensor(w0), subscripts="ij,jk->ik")\
+        .add(Tensor(b0)).relu().dot(w1s := Tensor(w1), subscripts="ij,jk->ik")\
+        .add(Tensor(b1))
+
+    outs.logsoftmax()
+    
+    # Negative LL loss
+    loss = Tensor(y).mul(outs).mul(Tensor(-1.0)).sum(axis=1).mean()
+    loss.backward()
+
+    # ========== tinygrad =========
+    tp = torch.tensor(X, requires_grad=True)
+    outp = tp.matmul(w0p := torch.tensor(w0, requires_grad=True)).add(torch.tensor(b0))\
+        .relu().matmul(w1p := torch.tensor(w1, requires_grad=True)).add(torch.tensor(b1))
+    
+    outp = torch.functional.F.log_softmax(outp)
+
+    # Negative LL loss
+    loss = torch.tensor(y).mul(outp).mul(torch.tensor(-1.0)).sum(axis=1).mean()
+    loss.backward() 
+
+    assert np.allclose(outs.val.get(), outp.data.numpy(), rtol=1e-04, atol=1e-05)
+    assert np.allclose(outs.grad.get(), tp.grad.data.numpy(), rtol=1e-04, atol=1e-05)
+    assert np.allclose(w0s.grad.get(), w0p.grad.data.numpy(), rtol=1e-04, atol=1e-05)
+    assert np.allclose(w1s.grad.get(), w1p.grad.data.numpy(), rtol=1e-04, atol=1e-05)
