@@ -248,13 +248,3 @@ def test_train_simple_classifier():
     plt.scatter(X[:, 0], X[:, 1], c=y_true, s=5, cmap="brg", alpha=0.5)
     plt.grid()
     plt.show()
-
-def test_simple_gpu():
-    Device.load_device(Device.GPU)
-    test_backward_pass_with_loss()
-    assert True
-
-def test_gpu():
-    Device.load_device(Device.GPU)
-    test_train_simple_classifier()
-    assert True
