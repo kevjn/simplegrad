@@ -1,11 +1,11 @@
-__kernel void relu_forward(__global const float *a_g, __global float *res_g)
+__kernel void relu_forward_default(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = max(a, (float)0.);
 }
 
-__kernel void relu_backward(__global const float *dv_g, __global const float *a_g, __global float *res_g)
+__kernel void relu_backward_default(__global const float *dv_g, __global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
@@ -13,7 +13,7 @@ __kernel void relu_backward(__global const float *dv_g, __global const float *a_
   res_g[gid] = dv * (a >= 0);
 }
 
-__kernel void pow_forward(__global const float *x_g,
+__kernel void pow_forward_binary(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -32,7 +32,7 @@ __kernel void pow_forward(__global const float *x_g,
   res_g[i] = pow(x_g[ix], y_g[iy]);
 }
 
-__kernel void pow_backward(__global const float *dv_g,
+__kernel void pow_backward_binary(__global const float *dv_g,
                           __global const int* dv_strides,
                           __global const float *x_g, 
                           __global const int* x_strides,
@@ -55,7 +55,7 @@ __kernel void pow_backward(__global const float *dv_g,
 }
 
 
-__kernel void add_forward(__global const float *x_g,
+__kernel void add_forward_binary(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -65,7 +65,7 @@ __kernel void add_forward(__global const float *x_g,
 {
   int i = 0, ix = 0, iy = 0;
   //iterate over trailing axes, the stride for non-trailing axes is set to 0 on host.
-  for(int dim = 0; dim < res_dims; dim++)
+  for(int dim = 0; dim < res_dims; dim++) // res_dims = get_work_dim()
   {
     i += get_global_id(dim) * res_strides[dim];
     ix += get_global_id(dim) * x_strides[dim];
@@ -75,7 +75,7 @@ __kernel void add_forward(__global const float *x_g,
   res_g[i] = x_g[ix] + y_g[iy];
 }
 
-__kernel void max_forward(__global const float* buffer,
+__kernel void max_forward_reduction(__global const float* buffer,
             __global const int* strides,
             __global const int* anchored_axes,
             __const int reduced_axis,
@@ -102,7 +102,7 @@ __kernel void max_forward(__global const float* buffer,
   result[idx] = accum;
 }
 
-__kernel void max_backward(__global const float *dv_g,
+__kernel void max_backward_binary(__global const float *dv_g,
                           __global const int* dv_strides,
                           __global const float *x_g, 
                           __global const int* x_strides,
@@ -123,14 +123,14 @@ __kernel void max_backward(__global const float *dv_g,
   res_g[idx] = dv_g[idv] * (x_g[ix] == out[iout]);
 }
 
-__kernel void exp_forward(__global const float *a_g, __global float *res_g)
+__kernel void exp_forward_default(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = exp(a);
 }
 
-__kernel void exp_backward(__global const float *dv_g, __global const float *a_g, __global const float *out_g, __global float *res_g)
+__kernel void exp_backward_default(__global const float *dv_g, __global const float *a_g, __global const float *out_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float dv = dv_g[gid];
@@ -138,14 +138,14 @@ __kernel void exp_backward(__global const float *dv_g, __global const float *a_g
   res_g[gid] = dv * out;
 }
 
-__kernel void log_forward(__global const float *a_g, __global float *res_g)
+__kernel void log_forward_default(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = log(a);
 }
 
-__kernel void log_backward(__global const float *dv_g, __global const float *a_g, __global float *res_g)
+__kernel void log_backward_default(__global const float *dv_g, __global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float dv = dv_g[gid];
@@ -176,7 +176,7 @@ __kernel void log_backward(__global const float *dv_g, __global const float *a_g
 //          __global const int* reult_strides: strides for the output array (float aligned)
 
 __kernel
-void sum_forward(__global const float* buffer,
+void sum_forward_reduction(__global const float* buffer,
             __global const int* strides,
             __global const int* anchored_axes,
             __const int reduced_axis,
@@ -203,7 +203,7 @@ void sum_forward(__global const float* buffer,
   result[idx] = accum;
 }
 
-__kernel void sum_backward(__global const float *dv_g,
+__kernel void sum_backward_binary(__global const float *dv_g,
                           __global const int* dv_strides,
                           __global const float *x_g, 
                           __global const int* x_strides,
@@ -222,7 +222,7 @@ __kernel void sum_backward(__global const float *dv_g,
 }
 
 __kernel
-void dot_forward(__global const float* x_g,
+void dot_forward_binaryreduction(__global const float* x_g,
             __global const float* y_g,
             __global const int* x_strides,
             __global const int* y_strides,
@@ -253,7 +253,7 @@ void dot_forward(__global const float* x_g,
 }
 
 __kernel 
-void mul_forward(__global const float *x_g,
+void mul_extra_binary(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,

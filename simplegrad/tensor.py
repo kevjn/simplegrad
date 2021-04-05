@@ -58,7 +58,7 @@ class Device(object):
             wrapped_gpu_op = functools.partial(Device.GPU.Parser.einsum_backward_wrapper, _dot)
             Tensor.dot.__closure__[0].cell_contents = wrapped_gpu_op
 
-            # assumate pow backward is commutative
+            # assume pow backward is commutative
             _pow = Tensor.pow.__closure__[0].cell_contents
             wrapped_gpu_op = functools.partial(Device.GPU.Parser.backward_wrapper, _pow)
             Tensor.pow.__closure__[0].cell_contents = wrapped_gpu_op
