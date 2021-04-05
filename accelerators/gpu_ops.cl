@@ -102,6 +102,57 @@ __kernel void max_forward(__global const float* buffer,
   result[idx] = accum;
 }
 
+__kernel void max_backward(__global const float *dv_g,
+                          __global const int* dv_strides,
+                          __global const float *x_g, 
+                          __global const int* x_strides,
+                          __global const float *out, 
+                          __global const int* out_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  int idx = 0, idv = 0, ix = 0, iout = 0;
+  for (int dim = 0; dim < get_work_dim(); dim++)
+  {
+    idx += get_global_id(dim) * res_strides[dim];
+    idv += get_global_id(dim) * dv_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iout += get_global_id(dim) * out_strides[dim];
+  }
+  res_g[idx] = dv_g[idv] * (x_g[ix] == out[iout]);
+}
+
+__kernel void exp_forward(__global const float *a_g, __global float *res_g)
+{
+  int gid = get_global_id(0);
+  float a = a_g[gid];
+  res_g[gid] = exp(a);
+}
+
+__kernel void exp_backward(__global const float *dv_g, __global const float *a_g, __global const float *out_g, __global float *res_g)
+{
+  int gid = get_global_id(0);
+  float dv = dv_g[gid];
+  float out = out_g[gid];
+  res_g[gid] = dv * out;
+}
+
+__kernel void log_forward(__global const float *a_g, __global float *res_g)
+{
+  int gid = get_global_id(0);
+  float a = a_g[gid];
+  res_g[gid] = log(a);
+}
+
+__kernel void log_backward(__global const float *dv_g, __global const float *a_g, __global float *res_g)
+{
+  int gid = get_global_id(0);
+  float dv = dv_g[gid];
+  float a = a_g[gid];
+  res_g[gid] = dv / a;
+}
+
 //-------------------------------------------------------------------------------
 // 
 //  kernel: sum_forward

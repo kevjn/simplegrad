@@ -202,7 +202,7 @@ def test_forward_and_backward_for_simple_classifier():
     loss = Tensor(y).mul(outs).mul(Tensor(-1.0)).sum(axis=1).mean()
     loss.backward()
 
-    # ========== tinygrad =========
+    # ========== pytorch =========
     tp = torch.tensor(X, requires_grad=True)
     outp = tp.matmul(w0p := torch.tensor(w0, requires_grad=True)).add(torch.tensor(b0))\
         .relu().matmul(w1p := torch.tensor(w1, requires_grad=True)).add(torch.tensor(b1))
