@@ -159,7 +159,7 @@ class Device(object):
                 reduced_axis_stride_x = xstrides[reduced_axis_x]
                 reduced_axis_stride_y = ystrides[reduced_axis_y]
 
-                assert x.shape[xorder[reduced_axis_x]] == y.shape[yorder[reduced_axis_y]]
+                assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
                 reduced_axis_size = x.shape[reduced_axis_x]
 
                 # set stride of reduced dimension to 0 and sort
