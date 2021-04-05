@@ -519,7 +519,7 @@ class Tensor(object):
 
         fork = Tensor(self.val)
         fork.backward_fxns.append(fork_backward)
-        fork.arguments.append(tuple()) # empty args
+        fork.arguments.append((dict(),)) # empty args
 
         def parent_backward(dv):
             nonlocal dv_fork
@@ -527,7 +527,7 @@ class Tensor(object):
             return dv + dv_fork # accumulate parent gradient
 
         self.backward_fxns.append(parent_backward)
-        self.arguments.append(tuple()) # empty args
+        self.arguments.append((dict(),)) # empty args
 
         fork.debug += " join "
 
