@@ -205,20 +205,18 @@ def test_train_simple_classifier():
     # one-hot encode sparse y
     y = np.eye(num_classes)[y_true]
 
-    # y = torch.tensor(y_init)
-    w0 = Tensor(np.random.randn(2,64))
-    b0 = Tensor(np.random.randn(64))
-    w1 = Tensor(np.random.randn(64, num_classes))
+    w0 = Tensor(np.random.randn(2,1024))
+    b0 = Tensor(np.random.randn(1024))
+    w1 = Tensor(np.random.randn(1024, num_classes))
     b1 = Tensor(np.random.randn(num_classes))
 
     optim = optimizer.Adam([w0, b0, w1, b1])
 
-    for epoch in range(4000):
-
-        out = Tensor(X).dot(w0).add(b0).relu().dot(w1).add(b1)
+    for epoch in range(200):
+        out = Tensor(X).dot(w0, subscripts="ij,jk->ik").add(b0).relu().dot(w1, subscripts="ij,jk->ik").add(b1)
         out = out.logsoftmax()
 
-        y_pred = out.val.argmax(axis=1)
+        y_pred = Device.to_cpu(out.val).argmax(axis=1)
         acc = np.mean(y_pred == y_true)
 
         # Categorical cross-entropy loss
@@ -240,8 +238,9 @@ def test_train_simple_classifier():
 
     X1, Y2 = np.meshgrid(x_1, x_2)
     k = np.dstack((X1, Y2))
-    out = Tensor(k).dot(w0).add(b0).relu().dot(w1).add(b1).softmax()
-    res = out.val.argmax(axis=-1)
+    out = Tensor(k).dot(w0, subscripts='ijk,kl->ijl').add(b0).relu()\
+        .dot(w1, subscripts='ijk,kl->ijl').add(b1).softmax()
+    res = Device.to_cpu(out.val).argmax(axis=-1)
 
     cs = plt.contourf(X1, Y2, res, cmap="brg", alpha=0.5)
     plt.colorbar(cs)
