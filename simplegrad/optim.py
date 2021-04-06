@@ -27,8 +27,8 @@ class Adam(Optimizer):
 
         super().__init__(params, *(learning_rate, epsilon, beta1, beta2), **kwargs)
 
-        self.moment = [np.zeros(p.shape) for p in params]
-        self.cache = [np.zeros(p.shape) for p in params]
+        self.moment = [Device.to_device(np.zeros(p.shape)) for p in params]
+        self.cache = [Device.to_device(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
         # bias correction
@@ -37,4 +37,4 @@ class Adam(Optimizer):
         for t, m, v in zip(self.params, self.moment, self.cache):
             m[:] = b1 * m + (1.0 - b1) * t.grad
             v[:] = b2 * v + (1.0 - b2) * t.grad * t.grad
-            t.val -= lr * m / (np.sqrt(v) + eps)
+            t.val = t.val - lr * m / (v ** 0.5 + eps)

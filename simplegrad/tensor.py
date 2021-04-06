@@ -20,6 +20,9 @@ class Device(object):
     def to_device(x):
         return np.array(x, dtype=np.float32)
 
+    def to_cpu(x):
+        return x
+
     class CPU:
         pass
 
@@ -68,6 +71,9 @@ class Device(object):
                 if isinstance(x, np.ndarray) else x.copy() \
                 if isinstance(x, cl.array.Array) else \
                 cl.array.to_device(Device.GPU.queue, np.array([x], dtype=np.float32))
+
+        def to_cpu(x):
+            return x.get()
 
         class Parser(object):
 
