@@ -20,6 +20,8 @@ class Optimizer:
         for t in self.params:
             t.grad = 0.0
 
+from simplegrad.tensor import Device
+
 class Adam(Optimizer):
     
     def __init__(self, params, learning_rate = 0.01, epsilon = 1e-7, 

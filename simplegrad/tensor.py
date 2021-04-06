@@ -11,7 +11,7 @@ class Device(object):
     def load_device(device):
         device()
         Device.to_device = device.to_device
-        Device.Parser = device.Parser
+        Device.to_cpu = device.to_cpu
 
     def load(name):
         # get unwrapped forward function
@@ -52,18 +52,18 @@ class Device(object):
 
             # sum backward needs an additional wrapper
             _sum = Tensor.sum.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(Device.GPU.Parser.sum_backward_wrapper, _sum)
+            wrapped_gpu_op = functools.partial(self.Parser.sum_backward_wrapper, _sum)
             Tensor.sum.__closure__[0].cell_contents = wrapped_gpu_op
 
             # einsum backward uses forward pass and needs an additional wrapper
             Tensor.dot.__closure__[0].cell_contents = Tensor.dot.__closure__[1].cell_contents
             _dot = Tensor.dot.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(Device.GPU.Parser.einsum_backward_wrapper, _dot)
+            wrapped_gpu_op = functools.partial(self.Parser.einsum_backward_wrapper, _dot)
             Tensor.dot.__closure__[0].cell_contents = wrapped_gpu_op
 
             # assume pow backward is commutative
             _pow = Tensor.pow.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(Device.GPU.Parser.backward_wrapper, _pow)
+            wrapped_gpu_op = functools.partial(self.Parser.backward_wrapper, _pow)
             Tensor.pow.__closure__[0].cell_contents = wrapped_gpu_op
 
         def to_device(x):
@@ -216,7 +216,7 @@ class Device(object):
                 return (*range(x.ndim),) if ax is None else ax if type(ax) is tuple else ax if ax >= 0 else x.ndim + ax
 
             def reduction(kernel, x, axis=None, keepdims=False, **kwargs):
-                axis = Device.Parser.axis(x, axis)
+                axis = Device.GPU.Parser.axis(x, axis)
 
                 if type(axis) is tuple:
                     for ax in sorted(axis, reverse=True):
