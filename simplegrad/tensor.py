@@ -279,24 +279,20 @@ class Tensor(object):
         # implicit gradient creation
         self._backward(Device.to_device(np.ones(self.shape)))
         
-    def operation(forward, backward, *, use_output):
-        @functools.wraps(forward)
-        def wrapper(self, *args, **kwargs):
+    def operation(self, forward, backward, use_output, *args, **kwargs):
+        self.val = forward(*args, **kwargs)
 
-            self.val = forward(*args, **kwargs)
+        # save intermediate variables and (output) for backward pass
+        self.arguments.append((*args, *(self.val,) * use_output, kwargs))
+        self.backward_fxns.append(backward)
 
-            # save intermediate variables and (output) for backward pass
-            self.arguments.append((*args, *(self.val,) * use_output, kwargs))
-            self.backward_fxns.append(backward)
-
-            return self
-        return wrapper
+        return self
 
     def unary_operation(use_output=False):
         def decorator(forward, backward):
             @functools.wraps(forward)
             def wrapper(self, **kwargs):
-                return Tensor.operation(forward, backward, use_output=use_output)(self, self.val, **kwargs)
+                return self.operation(forward, backward, use_output, self.val, **kwargs)
             return wrapper
         return decorator
 
@@ -327,7 +323,7 @@ class Tensor(object):
             @functools.wraps(forward)
             def wrapper(self, operand, **kwargs):
                 args = self.val, operand.val
-                return Tensor.operation(forward, propagate(unbroadcast(backward), operand), use_output=False)(self, *args, **kwargs)
+                return self.operation(forward, propagate(unbroadcast(backward), operand), False, *args, **kwargs)
             return wrapper
         return decorator
 
