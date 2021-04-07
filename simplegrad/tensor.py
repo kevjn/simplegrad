@@ -375,19 +375,15 @@ class Tensor(object):
     def max_forward(x, axis=None, keepdims=False):
         return np.max(x, axis=axis, keepdims=keepdims)
     
-    def max_backward(dv, x, out, axis=None, **kwargs):
-        if axis:
-            area = np.prod(np.take(x.shape, axis))
-            xr = x.reshape(-1, area)
-            idx = xr.argmax(1)
-            mask = np.zeros_like(xr)
-            np.put_along_axis(mask, idx[:, None], 1, axis=-1)
-            mask = mask * dv.reshape(mask.shape[0], 1)
-            return mask.reshape(x.shape)
-
-        mask = np.zeros_like(x)
-        mask[x == out] = dv
-        return mask
+    def max_backward(dv, x, out, axis=None, keepdims=False):
+        x = x.copy() # temp fix
+        if keepdims:
+            dv = np.squeeze(dv, axis) # remove empty dims
+        r = x.reshape(*dv.shape, -1) # flatten reduced axes
+        max_idx = r.argmax(-1)
+        r[:] = 0
+        r[(*np.indices(r.shape[:-1]), max_idx)] = dv
+        return x
 
     max = operation.unary(use_output=True)(max_forward, max_backward)
 
