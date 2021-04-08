@@ -307,7 +307,7 @@ class Tensor(object):
                 return Device.load("sum")(grad, axis=axes).reshape(shape)
             @functools.wraps(backward)
             def wrapper(*args, shapes, **kwargs):
-                return *it.starmap(reduce, zip(backward(*args, **kwargs), shapes)),
+                return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
             return wrapper
 
         def propagate(backward, operand):
