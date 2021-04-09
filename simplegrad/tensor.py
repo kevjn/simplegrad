@@ -245,16 +245,20 @@ class Device(object):
                 kernel(global_work_size, None, *args)
                 return res
 
+# pretty print arrays
 np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
-np._einsum = lambda *args, subscripts: np.einsum(subscripts, *args) # temp-fix
+# patch numpy operations
+np._einsum = lambda *args, subscripts: np.einsum(subscripts, *args)
 np.relu = lambda x: np.maximum(x, 0)
 np.pow = np.power
+np.mul = np.multiply
+np.to_device = lambda x: np.array(x, dtype=np.float32)
 
 class Tensor(object):
+    device = np
 
     def __init__(self, value):
-        self.debug = ""
-        self.val = Device.to_device(value)
+        self.val = Tensor.device.to_device(value)
         self.grad = 0
 
         self.backward_fxns = [] 
@@ -281,10 +285,10 @@ class Tensor(object):
 
     def backward(self):
         # implicit gradient creation
-        self._backward(Device.to_device(np.ones(self.shape)))
+        self._backward(Tensor.device.to_device(np.ones(self.shape)))
 
     def __getattr__(self, attr):
-        forward = getattr(np, attr)
+        forward = getattr(Tensor.device, attr)
         backward = getattr(Tensor, f"{attr}_backward")
 
         def wrapper(*operands, **kwargs):
@@ -305,7 +309,7 @@ class Tensor(object):
             axes = *np.arange(grad.ndim)[idx],
             if not axes:
                 return grad
-            return np.sum(grad, axis=axes).reshape(shape)
+            return Tensor.device.sum(grad, axis=axes).reshape(shape)
         @functools.wraps(backward)
         def wrapper(*args, shapes, **kwargs):
             return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
@@ -322,13 +326,13 @@ class Tensor(object):
     # ========== unary ops ==========
 
     def relu_backward(dv, x, out): 
-        return dv * (x >= 0)
+        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, 0))
 
     def exp_backward(dv, x, out):
-        return dv * out
+        return Tensor.device.mul(dv, out)
 
     def log_backward(dv, x, out):
-        return dv * x ** -1
+        return Tensor.device.mul(dv, Tensor.device.pow(x, -1))
     
     # ========== reduce ops ==========
 
@@ -350,7 +354,7 @@ class Tensor(object):
     # ========== binary ops ==========
 
     def pow_backward(dv, operand, x, y, out):
-        return dv * y * x ** (y-1.0)
+        return Tensor.device.mul(dv, Tensor.device.mul(y, Tensor.device.pow(x, y-1.0)))
 
     @propagate
     @unbroadcast
