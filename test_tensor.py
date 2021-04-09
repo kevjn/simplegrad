@@ -62,8 +62,8 @@ def test_softmax_and_mean():
     w0 = Tensor(np.random.randn(2,32))
     w1 = Tensor(np.random.randn(32,3))
 
-    before_softmax = Tensor(X).dot(w0).relu().dot(w1).val
-    mdl = Tensor(X).dot(w0).relu().dot(w1).softmax()
+    before_softmax = Tensor(X).einsum('ij,jk->ik', w0).relu().einsum('ij,jk->ik', w1).val
+    mdl = Tensor(X).einsum('ij,jk->ik', w0).relu().einsum('ij,jk->ik', w1).softmax()
     out = mdl.val
 
     assert np.allclose(out, softmax(before_softmax, axis=-1))
@@ -91,7 +91,7 @@ def test_simple_backward():
 
     x2 = Tensor(np.eye(3))
     y2 = Tensor(np.array([[2.0, 0, -2.0]]))
-    z = y2.dot(x2).sum()
+    z = y2.einsum("ij,jk->ik", x2).sum()
     z.backward()
 
     assert np.allclose(x.grad, x2.grad)
@@ -106,7 +106,7 @@ def test_backward_max():
 
     x2 = Tensor(np.eye(3))
     y2 = Tensor(np.array([[2.0, 0, -2.0]]))
-    z = y2.dot(x2).max()
+    z = y2.einsum("ij,jk->ik", x2).max()
     z.backward()
 
     assert np.allclose(x.grad, x2.grad)
@@ -160,7 +160,7 @@ def test_backward_pass_with_loss():
         w0 = Tensor(w0_init)
         w1 = Tensor(w1_init)
 
-        out = Tensor(X_init).dot(w0).relu().dot(w1).logsoftmax()
+        out = Tensor(X_init).einsum("ij,jk->ik", w0).relu().einsum("ij,jk->ik", w1).logsoftmax()
         loss = out.mul(y).mul(Tensor(-1.)).sum(axis=1).mean()
         loss.backward()
         return w0.grad, w1.grad
@@ -213,7 +213,7 @@ def test_train_simple_classifier():
     optim = optimizer.Adam([w0, b0, w1, b1])
 
     for epoch in range(200):
-        out = Tensor(X).dot(w0, subscripts="ij,jk->ik").add(b0).relu().dot(w1, subscripts="ij,jk->ik").add(b1)
+        out = Tensor(X).einsum("ij,jk->ik", w0).add(b0).relu().einsum("ij,jk->ik", w1).add(b1)
         out = out.logsoftmax()
 
         y_pred = Device.to_cpu(out.val).argmax(axis=1)
@@ -238,8 +238,8 @@ def test_train_simple_classifier():
 
     X1, Y2 = np.meshgrid(x_1, x_2)
     k = np.dstack((X1, Y2))
-    out = Tensor(k).dot(w0, subscripts='ijk,kl->ijl').add(b0).relu()\
-        .dot(w1, subscripts='ijk,kl->ijl').add(b1).softmax()
+    out = Tensor(k).einsum('ijk,kl->ijl', w0).add(b0).relu()\
+        .einsum('ijk,kl->ijl', w1).add(b1).softmax()
     res = Device.to_cpu(out.val).argmax(axis=-1)
 
     cs = plt.contourf(X1, Y2, res, cmap="brg", alpha=0.5)

@@ -245,6 +245,10 @@ class Device(object):
                 kernel(global_work_size, None, *args)
                 return res
 
+np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+np._einsum = lambda *args, subscripts: np.einsum(subscripts, *args) # temp-fix
+np.relu = lambda x: np.maximum(x, 0)
+np.pow = np.power
 
 class Tensor(object):
 
@@ -278,98 +282,60 @@ class Tensor(object):
     def backward(self):
         # implicit gradient creation
         self._backward(Device.to_device(np.ones(self.shape)))
-        
-    def operation(self, forward, backward, use_output, *args, **kwargs):
-        self.val = forward(*args, **kwargs)
 
-        # save intermediate variables and (output) for backward pass
-        self.arguments.append((*args, *(self.val,) * use_output, kwargs))
-        self.backward_fxns.append(backward)
+    def __getattr__(self, attr):
+        forward = getattr(np, attr)
+        backward = getattr(Tensor, f"{attr}_backward")
 
-        return self
+        def wrapper(*operands, **kwargs):
+            args = tuple(x.val for x in (self, *operands))
+            self.val = forward(*args, **kwargs)
 
-    def unary_operation(use_output=False):
-        def decorator(forward, backward):
-            @functools.wraps(forward)
-            def wrapper(self, **kwargs):
-                return self.operation(forward, backward, use_output, self.val, **kwargs)
-            return wrapper
-        return decorator
+            # save intermediate variables and (output) for backward pass
+            self.arguments.append((*operands, *args, self.val, kwargs))
+            self.backward_fxns.append(backward)
 
-    def binary_operation():
-        def unbroadcast(backward):
-            def reduce(grad, shape):
-                _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
-                idx = np.not_equal(grad.shape, _shape)
-                axes = *np.arange(grad.ndim)[idx],
-                if not axes:
-                    return grad
-                return Device.load("sum")(grad, axis=axes).reshape(shape)
-            @functools.wraps(backward)
-            def wrapper(*args, shapes, **kwargs):
-                return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
-            return wrapper
+            return self
+        return wrapper
 
-        def propagate(backward, operand):
-            @functools.wraps(backward)
-            def wrapper(*args, **kwargs):
-                x, y = args[1:3]
-                dy, dx = backward(*args, shapes=(y.shape, x.shape), **kwargs)
-                operand._backward(dy)
-                return dx
-            return wrapper
+    def unbroadcast(backward):
+        def reduce(grad, shape):
+            _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
+            idx = np.not_equal(grad.shape, _shape)
+            axes = *np.arange(grad.ndim)[idx],
+            if not axes:
+                return grad
+            return np.sum(grad, axis=axes).reshape(shape)
+        @functools.wraps(backward)
+        def wrapper(*args, shapes, **kwargs):
+            return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
+        return wrapper
 
-        def decorator(forward, backward):
-            @functools.wraps(forward)
-            def wrapper(self, operand, **kwargs):
-                args = self.val, operand.val
-                return self.operation(forward, propagate(unbroadcast(backward), operand), False, *args, **kwargs)
-            return wrapper
-        return decorator
-
-    operation.unary = unary_operation 
-    operation.binary = binary_operation
+    def propagate(backward):
+        @functools.wraps(backward)
+        def wrapper(dv, operand, x, y, out, **kwargs):
+            dy, dx = backward(dv, x, y, out, shapes=(y.shape, x.shape), **kwargs)
+            operand._backward(dy)
+            return dx
+        return wrapper
 
     # ========== unary ops ==========
 
-    def relu_forward(x): 
-        return np.maximum(x, 0)
-
-    def relu_backward(dv, x): 
+    def relu_backward(dv, x, out): 
         return dv * (x >= 0)
-
-    relu = operation.unary()(relu_forward, relu_backward)
-
-    def exp_forward(x):
-        return np.exp(x)
 
     def exp_backward(dv, x, out):
         return dv * out
 
-    exp = operation.unary(use_output=True)(exp_forward, exp_backward)
+    def log_backward(dv, x, out):
+        return dv * x ** -1
     
-    def log_forward(x):
-        return np.log(x)
-
-    def log_backward(dv, x):
-        return dv / x
-    
-    log = operation.unary()(log_forward, log_backward)
-
     # ========== reduce ops ==========
 
-    def sum_forward(x, axis=None, keepdims=False):
-        return np.sum(x, axis=axis, keepdims=keepdims)
-    
-    def sum_backward(dv, x, **kwargs):
+    def sum_backward(dv, x, out, **kwargs):
         if x.ndim > dv.ndim:
             dv = np.expand_dims(dv, -1)
         return np.broadcast_to(dv, x.shape)
-
-    sum = operation.unary()(sum_forward, sum_backward)
-
-    def max_forward(x, axis=None, keepdims=False):
-        return np.max(x, axis=axis, keepdims=keepdims)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
         x = x.copy() # temp fix
@@ -381,33 +347,21 @@ class Tensor(object):
         r[(*np.indices(r.shape[:-1]), max_idx)] = dv
         return x
 
-    max = operation.unary(use_output=True)(max_forward, max_backward)
-
     # ========== binary ops ==========
 
-    def pow_forward(x, y):
-        return x ** y
+    def pow_backward(dv, operand, x, y, out):
+        return dv * y * x ** (y-1.0)
 
-    def pow_backward(dv, x, y):
-        return dv * x ** y * np.log(x), \
-                dv * y * x ** (y-1.0)
-
-    pow = operation.binary()(pow_forward, pow_backward)
-
-    def add_forward(x, y):
-        return x + y
-
-    def add_backward(dv, x, y):
+    @propagate
+    @unbroadcast
+    def add_backward(dv, x, y, out):
         return dv, dv
 
-    add = operation.binary()(add_forward, add_backward)
-
     # ========== processing ops ==========
-
-    def dot_forward(x, y, subscripts='i...j,j...k->i...k'):
-        return np.einsum(subscripts,x,y)
     
-    def dot_backward(dv, x, y, subscripts='i...j,j...k->i...k'):
+    @propagate
+    @unbroadcast
+    def _einsum_backward(dv, x, y, out, subscripts='i...j,j...k->i...k'):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
         reduced_subscripts_x = set(x_subs) - set(output_subs + y_subs)
@@ -425,8 +379,6 @@ class Tensor(object):
             raise NotImplementedError # Tiling not implemented
 
         return dy, dx
-
-    dot = operation.binary()(dot_forward, dot_backward)
 
     def window_view_forward(x, kernel_size=(2,2), stride=1):
         N, cin, *in_shape, kdims = *x.shape, len(kernel_size)
@@ -449,16 +401,17 @@ class Tensor(object):
 
         return x
 
-    window_view = operation.unary(use_output=True)(window_view_forward, window_view_backward)
-
     # ========== composite ops ==========
+
+    def einsum(self, subscripts, *operands):
+        return self._einsum(*operands, subscripts=subscripts)
 
     def div(self, x):
         assert isinstance(x, type(self))
         return self.mul(x.pow(Tensor(-1.0)))
 
     def mul(self, x):
-        return self.dot(x, subscripts="...,...->...")
+        return self._einsum(x, subscripts="...,...->...") # same as '...,...'
 
     def sub(self, x):
         return self.add(x.mul(Tensor(-1)))
@@ -489,7 +442,7 @@ class Tensor(object):
     def conv2d(self, w, padding=0, stride=1):
         assert len(self.shape) == len(w.shape) == 4
         return self.window_view(kernel_size=w.shape[-2:], stride=stride)\
-            .dot(w, subscripts='abcdef,gbef->agcd')
+            ._einsum(w, subscripts='abcdef,gbef->agcd')
 
     def maxpool2d(self, kernel_size = (3,3), padding=0, stride=1):
         return self.window_view(kernel_size=kernel_size, stride=stride).max(axis=(-1, -2))
