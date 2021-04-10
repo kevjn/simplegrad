@@ -246,7 +246,7 @@ class Device(object):
                 return res
 
 # pretty print arrays
-np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 # patch numpy operations
 np._einsum = lambda *args, subscripts: np.einsum(subscripts, *args)
 np.relu = lambda x: np.maximum(x, 0)
@@ -265,7 +265,7 @@ class Tensor(object):
         self.arguments = []
 
     def __repr__(self):
-        return f"Tensor({self.val!r},\ngrad={self.grad!r})"
+        return f"Tensor({np.array2string(self.val, prefix=' '*7)})"
 
     @property
     def shape(self):
