@@ -24,9 +24,9 @@ def equal_add(a: np.ndarray, b: np.ndarray):
     return np.allclose(tensor_simplegrad.val.get(), tensor_pytorch.data.numpy())
 
 def equal_einsum(subscripts, a: np.ndarray, b: np.ndarray):
-    res_gpu = Tensor(a).dot(Tensor(b), subscripts=subscripts).val
-    res_cpu = np.einsum(subscripts, a, b)
-    return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
+    res_gpu = Tensor(a).einsum(subscripts, Tensor(b)).val
+    res_cpu = np.einsum(a, b, subscripts=subscripts)
+    return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-06)
 
 def test_sum_reduction_kernel():
     a = np.random.randn(10,100,60,5).astype(np.float32)
@@ -104,6 +104,10 @@ def test_einsum_reduction_with_unequal_ndim():
     assert equal_einsum("kji,ji->ik", a, b)
 
     assert equal_einsum("jik,ji->ik", a, b)
+
+    k = np.random.randn(100, 100, 2)
+    w = np.random.randn(2, 64)
+    assert equal_einsum("ijk,kl->ijl", k, w)
 
     # assert equal_einsum("jki,ji->ik", a, b) # TODO: fix this
     # assert equal_einsum("ijk,jl->ik", a, b) # TODO: fix this
@@ -192,14 +196,14 @@ def test_forward_and_backward_for_simple_classifier():
     y = np.random.randn(3000, 3)
 
     # ========== simplegrad ==========
-    outs = Tensor(X).dot(w0s := Tensor(w0), subscripts="ij,jk->ik")\
-        .add(Tensor(b0)).relu().dot(w1s := Tensor(w1), subscripts="ij,jk->ik")\
+    outs = Tensor(X).einsum("ij,jk->ik", w0s := Tensor(w0))\
+        .add(Tensor(b0)).relu().einsum("ij,jk->ik", w1s := Tensor(w1))\
         .add(Tensor(b1))
 
     outs.logsoftmax()
     
     # Negative LL loss
-    loss = Tensor(y).mul(outs).mul(Tensor(-1.0)).sum(axis=1).mean()
+    loss = Tensor(y).mul(outs).mul(Tensor(-1)).sum(axis=1).mean()
     loss.backward()
 
     # ========== pytorch =========
@@ -217,3 +221,8 @@ def test_forward_and_backward_for_simple_classifier():
     assert np.allclose(outs.grad.get(), tp.grad.data.numpy(), rtol=1e-04, atol=1e-05)
     assert np.allclose(w0s.grad.get(), w0p.grad.data.numpy(), rtol=1e-04, atol=1e-05)
     assert np.allclose(w1s.grad.get(), w1p.grad.data.numpy(), rtol=1e-04, atol=1e-05)
+
+def test_train_simple_classifier():
+    from test_tensor import test_train_simple_classifier
+    test_train_simple_classifier()
+    assert True
