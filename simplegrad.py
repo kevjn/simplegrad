@@ -310,6 +310,11 @@ class Tensor(object):
     def add_backward(dv, x, y, out):
         return dv, dv
 
+    @propagate
+    @unbroadcast
+    def mul_backward(dv, x, y, out):
+        return Tensor.device.mul(dv, x), Tensor.device.mul(dv, y)
+
     # ========== processing ops ==========
     
     @propagate
@@ -362,9 +367,6 @@ class Tensor(object):
     def div(self, x):
         assert isinstance(x, type(self))
         return self.mul(x.pow(Tensor(-1)))
-
-    def mul(self, x):
-        return self.einsum("...,...->...", x)
 
     def sub(self, x):
         return self.add(x.mul(Tensor(-1)))
