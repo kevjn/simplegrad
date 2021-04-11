@@ -1,5 +1,4 @@
-from simplegrad.tensor import Device, Tensor
-from simplegrad import optim as optimizer
+from simplegrad import Device, Tensor, Adam
 
 import numpy as np
 np.random.seed(100)
@@ -210,7 +209,7 @@ def test_train_simple_classifier():
     w1 = Tensor(np.random.randn(1024, num_classes))
     b1 = Tensor(np.random.randn(num_classes))
 
-    optim = optimizer.Adam([w0, b0, w1, b1])
+    optim = Adam([w0, b0, w1, b1])
 
     for epoch in range(200):
         out = Tensor(X).einsum("ij,jk->ik", w0).add(b0).relu().einsum("ij,jk->ik", w1).add(b1)

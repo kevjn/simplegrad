@@ -1,9 +1,9 @@
 import numpy as np
-from simplegrad.tensor import Device, Tensor
+from simplegrad import Device, Tensor
 import torch
 
 np.random.seed(1337)
-Device.load_device(Device.GPU)
+Tensor.device = Device.GPU()
 
 def equal_sum_over_axis(arr, *, axis):
     res_cpu = np.sum(arr, axis=axis)
@@ -223,6 +223,6 @@ def test_forward_and_backward_for_simple_classifier():
     assert np.allclose(w1s.grad.get(), w1p.grad.data.numpy(), rtol=1e-04, atol=1e-05)
 
 def test_train_simple_classifier():
-    from test_tensor import test_train_simple_classifier
+    from test.test_tensor import test_train_simple_classifier
     test_train_simple_classifier()
     assert True

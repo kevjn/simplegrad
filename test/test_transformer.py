@@ -1,5 +1,4 @@
-from simplegrad.tensor import Device, Tensor
-from simplegrad import optim as optimizer
+from simplegrad import Device, Tensor, Adam
 import itertools as it
 
 import numpy as np
@@ -480,7 +479,7 @@ def test_seq2seq_model():
     num_heads = 1
 
     model = Transformer(embed_dim, num_heads, num_categories)
-    optim = optimizer.Adam(model.params, learning_rate=5e-4)
+    optim = Adam(model.params, learning_rate=5e-4)
 
     for epoch, batch in it.product(range(epochs := 10), batches):
         X, y = batch

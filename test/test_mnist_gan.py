@@ -1,7 +1,6 @@
 # rough copy of https://github.com/geohot/tinygrad/blob/master/examples/mnist_gan.py
 
-from simplegrad.tensor import Tensor
-from simplegrad import optim
+from simplegrad import Tensor, Device, Adam
 import numpy as np
 import itertools as it
 from torchvision.utils import make_grid, save_image
@@ -78,8 +77,8 @@ def test_minst_gan():
 
     ds_noise = np.random.randn(64,128).astype(np.float32)
 
-    optim_g = optim.Adam(generator.params, learning_rate=0.0002, beta1=0.5)
-    optim_d = optim.Adam(discriminator.params, learning_rate=0.0002, beta1=0.5)
+    optim_g = Adam(generator.params, learning_rate=0.0002, beta1=0.5)
+    optim_d = Adam(discriminator.params, learning_rate=0.0002, beta1=0.5)
 
     def batches_generator():
         batch_nr = 0

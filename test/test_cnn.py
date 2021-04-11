@@ -1,5 +1,5 @@
 import numpy as np
-from simplegrad.tensor import Tensor
+from simplegrad import Tensor
 import torch
 
 def test_simple_conv1d():

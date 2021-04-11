@@ -1,5 +1,4 @@
-from simplegrad.tensor import Tensor
-from simplegrad import optim as optimizer
+from simplegrad import Tensor, Adam
 import numpy as np
 np.random.seed(1337)
 
@@ -66,7 +65,7 @@ def test_predict_sine_wave():
     training_data = [(seq[i:i+SEQ_LEN], seq[i+1:i+1+SEQ_LEN]) for i in range(len(seq)-SEQ_LEN-1)]
 
     model = LSTM(1,1,SEQ_LEN)
-    optim = optimizer.Adam(model.params)
+    optim = Adam(model.params)
 
     # training
     for epoch in range(3):
