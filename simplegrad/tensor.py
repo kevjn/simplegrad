@@ -4,28 +4,8 @@ import itertools as it
 import operator
 import pyopencl as cl
 import pyopencl.array
-from collections import defaultdict
 
 class Device(object):
-
-    def load_device(device):
-        device()
-        Device.to_device = device.to_device
-        Device.to_cpu = device.to_cpu
-
-    def load(name):
-        # get unwrapped forward function
-        return getattr(Tensor, name).__closure__[1].cell_contents
-
-    def to_device(x):
-        return np.array(x, dtype=np.float32)
-
-    def to_cpu(x):
-        return x
-
-    class CPU:
-        pass
-
     class GPU:
         def __init__(self):
             # initialize opencl
@@ -34,69 +14,24 @@ class Device(object):
 
             prg = cl.Program(Device.GPU.ctx, open('./accelerators/gpu_ops.cl').read()).build()
             for kernel in prg.all_kernels():
-                tokens = kernel.function_name.split("_")
-                assert len(tokens) == 3
-                name, direction, parser = tokens
-                
-                # set appropriate interface to kernel
+                tokens = kernel.function_name.split("__")
+                assert len(tokens) == 2
+                name, parser = tokens
                 parser = getattr(self.Parser, parser)
                 wrapped_gpu_op = functools.partial(parser, functools.partial(kernel, self.queue))
+                setattr(self, name, wrapped_gpu_op)
 
-                if direction == 'extra': # extra operation
-                    setattr(Device.GPU, name, wrapped_gpu_op)
-                    continue
+        def to_device(self, x):
+            if isinstance(x, np.ndarray):
+                return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
+            if isinstance(x, cl.array.Array):
+                return x.copy()
+            return cl.array.to_device(Device.GPU.queue, np.array([x], dtype=np.float32))
 
-                # reassign closure with decorated gpu op
-                op = getattr(Tensor, name)
-                op.__closure__[direction == 'forward'].cell_contents = wrapped_gpu_op
-
-            # sum backward needs an additional wrapper
-            _sum = Tensor.sum.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(self.Parser.sum_backward_wrapper, _sum)
-            Tensor.sum.__closure__[0].cell_contents = wrapped_gpu_op
-
-            # einsum backward uses forward pass and needs an additional wrapper
-            Tensor.dot.__closure__[0].cell_contents = Tensor.dot.__closure__[1].cell_contents
-            _dot = Tensor.dot.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(self.Parser.einsum_backward_wrapper, _dot)
-            Tensor.dot.__closure__[0].cell_contents = wrapped_gpu_op
-
-            # assume pow backward is commutative
-            _pow = Tensor.pow.__closure__[0].cell_contents
-            wrapped_gpu_op = functools.partial(self.Parser.backward_wrapper, _pow)
-            Tensor.pow.__closure__[0].cell_contents = wrapped_gpu_op
-
-        def to_device(x):
-            return cl.array.to_device(Device.GPU.queue, x.astype(np.float32)) \
-                if isinstance(x, np.ndarray) else x.copy() \
-                if isinstance(x, cl.array.Array) else \
-                cl.array.to_device(Device.GPU.queue, np.array([x], dtype=np.float32))
-
-        def to_cpu(x):
+        def to_cpu(self, x):
             return x.get()
 
         class Parser(object):
-
-            def backward_wrapper(wrapped_op, *args, **kwargs):
-                dv = wrapped_op(*args, **kwargs)
-                return dv, dv
-
-            def sum_backward_wrapper(wrapped_op, dv, x, axis=None, keepdims=False):
-                if x.ndim > dv.ndim:
-                    broadcasted_shape = np.array((slice(None),) * x.ndim)
-                    np.put(broadcasted_shape, axis, None)
-                    dv = dv[tuple(broadcasted_shape)]
-                return wrapped_op(dv, x, axis=axis, keepdims=keepdims)
-
-            def einsum_backward_wrapper(wrapped_op, *args, subscripts="ij,jk->ik"):
-                dv, x, y = args
-                input_subs, output_subs = subscripts.split('->')
-                x_subs, y_subs = input_subs.split(',')
-                dx = wrapped_op(dv, y, subscripts=f"{output_subs},{y_subs}->{x_subs}")
-                dy = wrapped_op(dv, x, subscripts=f"{output_subs},{x_subs}->{y_subs}")
-
-                return dy, dx
-
             def default(kernel, *args, **kwargs):
                 # allocate output buffer on device
                 res = cl.array.empty_like(args[0])
@@ -104,6 +39,7 @@ class Device(object):
                 return res
 
             def binary(kernel, *args, **kwargs):
+                assert all(arg.ndim > 0 for arg in args), "operands needs to be atleast 1d"
                 res_shape = np.broadcast_shapes(*(x.shape for x in args))
                 res = cl.array.empty(Device.GPU.queue, res_shape, np.float32)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
@@ -118,7 +54,7 @@ class Device(object):
                 kernel(res.shape, None, *args)
                 return res
 
-            def binaryreduction(kernel, x, y, subscripts):
+            def einsum(kernel, x, y, subscripts):
                 # combines broadcasting and reduction parsing
                 assert subscripts
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
@@ -152,7 +88,7 @@ class Device(object):
                     y = y.transpose(yorder)
 
                     # standard multiplication
-                    return Device.GPU.mul(x, y)
+                    return Tensor.device.mul(x, y)
 
                 assert len(reduced_subscripts) == 1, "reduction over multiple axis not implemented yet"
                 reduced_subscript = reduced_subscripts.pop()
@@ -248,11 +184,15 @@ class Device(object):
 # pretty print arrays
 np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 # patch numpy operations
-np._einsum = lambda *args, subscripts: np.einsum(subscripts, *args)
+_einsum = np.einsum
+np.einsum = lambda *args, subscripts: _einsum(subscripts, *args)
 np.relu = lambda x: np.maximum(x, 0)
 np.pow = np.power
 np.mul = np.multiply
+_broadcast_to = np.broadcast_to
+np.broadcast_to = lambda x,y: _broadcast_to(x, y.shape)
 np.to_device = lambda x: np.array(x, dtype=np.float32)
+np.to_cpu = lambda x: x
 
 class Tensor(object):
     device = np
@@ -266,6 +206,9 @@ class Tensor(object):
 
     def __repr__(self):
         return f"Tensor({np.array2string(self.val, prefix=' '*7)})"
+
+    def cpu(self):
+        return Tensor.device.to_cpu(self.val)
 
     @property
     def shape(self):
@@ -285,7 +228,7 @@ class Tensor(object):
 
     def backward(self):
         # implicit gradient creation
-        self._backward(Tensor.device.to_device(np.ones(self.shape)))
+        self._backward(Tensor.device.to_device(np.ones(self.shape, dtype=np.float32)))
 
     def __getattr__(self, attr):
         forward = getattr(Tensor.device, attr)
@@ -326,29 +269,35 @@ class Tensor(object):
     # ========== unary ops ==========
 
     def relu_backward(dv, x, out): 
-        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, 0))
+        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, Tensor.device.to_device(0)))
 
     def exp_backward(dv, x, out):
         return Tensor.device.mul(dv, out)
 
     def log_backward(dv, x, out):
-        return Tensor.device.mul(dv, Tensor.device.pow(x, -1))
+        return Tensor.device.mul(dv, Tensor.device.pow(x, Tensor.device.to_device(-1)))
     
     # ========== reduce ops ==========
 
-    def sum_backward(dv, x, out, **kwargs):
+    def sum_backward(dv, x, out, axis=None, keepdims=False):
         if x.ndim > dv.ndim:
-            dv = np.expand_dims(dv, -1)
-        return np.broadcast_to(dv, x.shape)
+            dv = dv.reshape(*dv.shape, 1)
+        return Tensor.device.broadcast_to(dv, x)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
         x = x.copy() # temp fix
+        # TODO: this section only works for cpu atm
+        x = Tensor.device.to_cpu(x)
+        dv = Tensor.device.to_cpu(dv)
+
         if keepdims:
-            dv = np.squeeze(dv, axis) # remove empty dims
+            dv = dv.squeeze() # remove empty dims
         r = x.reshape(*dv.shape, -1) # flatten reduced axes
-        max_idx = r.argmax(-1)
+        max_idx = np.argmax(r, axis=-1)
         r[:] = 0
         r[(*np.indices(r.shape[:-1]), max_idx)] = dv
+
+        x = Tensor.device.to_device(x)
         return x
 
     # ========== binary ops ==========
@@ -365,16 +314,16 @@ class Tensor(object):
     
     @propagate
     @unbroadcast
-    def _einsum_backward(dv, x, y, out, subscripts='i...j,j...k->i...k'):
+    def einsum_backward(dv, x, y, out, subscripts='i...j,j...k->i...k'):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
         reduced_subscripts_x = set(x_subs) - set(output_subs + y_subs)
         x_subs_non_reduced = "".join(filter(lambda x: x not in reduced_subscripts_x, x_subs))
-        dx = np.einsum(f"{output_subs},{y_subs}->{x_subs_non_reduced}", dv, y)
+        dx = Tensor.device.einsum(dv, y, subscripts=f"{output_subs},{y_subs}->{x_subs_non_reduced}")
 
         reduced_subscripts_y = set(y_subs) - set(output_subs + x_subs)
         y_subs_non_reduced = "".join(filter(lambda y: y not in reduced_subscripts_y, y_subs))
-        dy = np.einsum(f"{output_subs},{x_subs}->{y_subs_non_reduced}", dv, x)
+        dy = Tensor.device.einsum(dv, x, subscripts=f"{output_subs},{x_subs}->{y_subs_non_reduced}")
 
         if reduced_subscripts_x:
             raise NotImplementedError # Tiling not implemented
@@ -408,14 +357,14 @@ class Tensor(object):
     # ========== composite ops ==========
 
     def einsum(self, subscripts, *operands):
-        return self._einsum(*operands, subscripts=subscripts)
+        return self.__getattr__('einsum')(*operands, subscripts=subscripts)
 
     def div(self, x):
         assert isinstance(x, type(self))
-        return self.mul(x.pow(Tensor(-1.0)))
+        return self.mul(x.pow(Tensor(-1)))
 
     def mul(self, x):
-        return self._einsum(x, subscripts="...,...->...") # same as '...,...'
+        return self.einsum("...,...->...", x)
 
     def sub(self, x):
         return self.add(x.mul(Tensor(-1)))
