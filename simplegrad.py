@@ -197,7 +197,8 @@ np.to_cpu = lambda x: x
 class Tensor(object):
     device = np
 
-    def __init__(self, value):
+    def __init__(self, value, name=None):
+        self.symbolic = self.name = str(name or value)
         self.val = Tensor.device.to_device(value)
         self.grad = 0
 
@@ -235,6 +236,10 @@ class Tensor(object):
         backward = getattr(Tensor, f"{attr}_backward")
 
         def wrapper(*operands, **kwargs):
+            symbolic_args = it.chain((x.symbolic for x in (self, *operands)), \
+                (f"{x}={repr(y)}" for x,y in kwargs.items()))
+            self.symbolic = f"{attr}({', '.join(symbolic_args)})"
+
             args = tuple(x.val for x in (self, *operands))
             self.val = forward(*args, **kwargs)
 
@@ -435,7 +440,8 @@ class Tensor(object):
         self.backward_fxns.append(parent_backward)
         self.arguments.append((dict(),)) # empty args
 
-        fork.debug += " join "
+        fork.symbolic = self.symbolic
+        fork.name = self.name # TODO: remove this?
 
         return fork
 
