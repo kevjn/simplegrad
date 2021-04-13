@@ -32,4 +32,7 @@ def test_simple_classifier():
         .einsum("ij,jk->ik", Tensor(w1, 'w1')).add(Tensor(b1, 'b1'))
     out = out.logsoftmax()
 
+    loss = Tensor(y, 'y').mul(out).mul(Tensor(-1.0)).sum(axis=1).mean()
+
     assert (out.val == eval(out.symbolic)).all()
+    assert (loss.val == eval(loss.symbolic)).all()

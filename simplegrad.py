@@ -187,7 +187,7 @@ np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 _einsum = np.einsum
 np.einsum = lambda *args, subscripts: _einsum(subscripts, *args)
 np.relu = lambda x: np.maximum(x, 0)
-np.pow = np.power
+np.pow = functools.partial(np.power, dtype=np.float32) # specify dtype to allow int to neg int powers
 np.mul = np.multiply
 _broadcast_to = np.broadcast_to
 np.broadcast_to = lambda x,y: _broadcast_to(x, y.shape)
