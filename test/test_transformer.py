@@ -422,7 +422,7 @@ class Transformer:
             note: input_dim is the same as num_categories
         """
         # map the one-hot input to a dense vector of shape [SeqLen, Batch, embed_dim]
-        x.dot(self.w0, subscripts="ijk,lk->ijl").add(self.b0)
+        x.einsum("ijk,lk->ijl", self.w0).add(self.b0)
 
         # positional encoding for sequences
         x.add(Tensor(self.pe[:x.shape[0]]))
@@ -435,22 +435,22 @@ class Transformer:
         x.add(residual).layer_norm(-1, self.layernorm_weight, self.layernorm_bias)
 
         # Output net maps the vector back to a sparse one-hot output
-        return x.dot(self.w1, subscripts="ijk,lk->ijl").add(self.b1)
+        return x.einsum("ijk,lk->ijl", self.w1).add(self.b1)
 
     def multi_head_attention_forward(self, x, mask=None):
-        k = x.fork().dot(self.key_dense, subscripts="ijk,lmk->jlim")
-        v = x.fork().dot(self.value_dense, subscripts="ijk,lmk->jlim")
-        q = x.dot(self.query_dense, subscripts="ijk,lmk->jlim")
+        k = x.fork().einsum("ijk,lmk->jlim", self.key_dense)
+        v = x.fork().einsum("ijk,lmk->jlim", self.value_dense)
+        q = x.einsum("ijk,lmk->jlim", self.query_dense)
 
-        attn_logits = q.dot(k, subscripts="ijkl,ijml->ijkm").div(Tensor(q.shape[-1]).pow(Tensor(0.5)))
+        attn_logits = q.einsum("ijkl,ijml->ijkm", k).div(Tensor(q.shape[-1]).pow(Tensor(0.5)))
 
         if mask:
             attn_logits.add(mask)
         attn = attn_logits.softmax()
         self.attention = attn.val
 
-        values = attn.dot(v, subscripts="ijkl,ijlm->ijkm")
-        output = values.dot(self.out_proj_weight, subscripts="ijkl,mjl->kim").add(self.out_proj_bias)
+        values = attn.einsum("ijkl,ijlm->ijkm", v)
+        output = values.einsum("ijkl,mjl->kim", self.out_proj_weight).add(self.out_proj_bias)
         return output, attn
 
 def test_seq2seq_model():
