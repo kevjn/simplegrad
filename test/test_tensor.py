@@ -34,7 +34,7 @@ def test_tanh():
     e = d.tanh().sum()
     e.backward()
 
-    assert np.allclose(c.detach().numpy(), e.val)
+    assert np.allclose(c.detach().numpy(), e.data)
     assert np.allclose(b.grad, d.grad)
 
 def test_multiple_tanh():
@@ -47,7 +47,7 @@ def test_multiple_tanh():
     e = d.tanh().tanh().tanh().tanh().sum()
     e.backward()
 
-    assert np.allclose(c.detach().numpy(), e.val)
+    assert np.allclose(c.detach().numpy(), e.data)
     assert np.allclose(b.grad, d.grad)
 
 def test_softmax_and_mean():
@@ -61,14 +61,14 @@ def test_softmax_and_mean():
     w0 = Tensor(np.random.randn(2,32))
     w1 = Tensor(np.random.randn(32,3))
 
-    before_softmax = Tensor(X).einsum('ij,jk->ik', w0).relu().einsum('ij,jk->ik', w1).val
+    before_softmax = Tensor(X).einsum('ij,jk->ik', w0).relu().einsum('ij,jk->ik', w1).data
     mdl = Tensor(X).einsum('ij,jk->ik', w0).relu().einsum('ij,jk->ik', w1).softmax()
-    out = mdl.val
+    out = mdl.data
 
     assert np.allclose(out, softmax(before_softmax, axis=-1))
 
     loss = mdl.mul(y).mean()
-    assert np.allclose(loss.val, np.mean(out * y.val, axis=-1, keepdims=True))
+    assert np.allclose(loss.data, np.mean(out * y.data, axis=-1, keepdims=True))
 
 def test_simple_neuron_backward():
     X = np.array([1, -2, 3, 1])
@@ -124,7 +124,7 @@ def test_backward_pass():
         w0 = Tensor(w0_init)
         w1 = Tensor(w1_init)
 
-        out = Tensor(X_init).dot(w0)
+        out = Tensor(X_init).einsum("ij,jk->ik", w0)
         out = out.logsoftmax()
         out = out.sum()
         out.backward()
@@ -193,7 +193,7 @@ def test_image_conv2d():
 
     res = Tensor(image).conv2d(kernel, padding=2)
 
-    cv2.imwrite('2DConvolved_test.jpg', res.val.squeeze())
+    cv2.imwrite('2DConvolved_test.jpg', res.data.squeeze())
 
 @pytest.mark.slow
 def test_train_simple_classifier():
@@ -215,7 +215,7 @@ def test_train_simple_classifier():
         out = Tensor(X).einsum("ij,jk->ik", w0).add(b0).relu().einsum("ij,jk->ik", w1).add(b1)
         out = out.logsoftmax()
 
-        y_pred = Device.to_cpu(out.val).argmax(axis=1)
+        y_pred = out.cpu().argmax(axis=1)
         acc = np.mean(y_pred == y_true)
 
         # Categorical cross-entropy loss
@@ -225,10 +225,10 @@ def test_train_simple_classifier():
         loss.backward()
         optim.step()
 
-        if epoch % 500 == 0:
-            print(f"loss: {loss.val}, acc: {acc}")
+        # if epoch % 500 == 0:
+        #     print(f"loss: {loss.data}, acc: {acc}")
 
-    assert loss.val[0] < 0.4 and acc > 0.8
+    assert loss.data[0] < 0.4 and acc > 0.8
 
     # visualize decision boundary
     num_points = 100
@@ -239,7 +239,7 @@ def test_train_simple_classifier():
     k = np.dstack((X1, Y2))
     out = Tensor(k).einsum('ijk,kl->ijl', w0).add(b0).relu()\
         .einsum('ijk,kl->ijl', w1).add(b1).softmax()
-    res = Device.to_cpu(out.val).argmax(axis=-1)
+    res = out.cpu().argmax(axis=-1)
 
     cs = plt.contourf(X1, Y2, res, cmap="brg", alpha=0.5)
     plt.colorbar(cs)

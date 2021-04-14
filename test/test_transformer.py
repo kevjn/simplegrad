@@ -447,7 +447,7 @@ class Transformer:
         if mask:
             attn_logits.add(mask)
         attn = attn_logits.softmax()
-        self.attention = attn.val
+        self.attention = attn.data
 
         values = attn.einsum("ijkl,ijlm->ijkm", v)
         output = values.einsum("ijkl,mjl->kim", self.out_proj_weight).add(self.out_proj_bias)

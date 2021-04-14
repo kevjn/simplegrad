@@ -2,6 +2,7 @@ import functools, types, numpy as np
 import typing
 import itertools as it
 import operator
+from abc import abstractmethod
 import pyopencl as cl
 import pyopencl.array
 
@@ -197,26 +198,26 @@ np.to_cpu = lambda x: x
 class Tensor(object):
     device = np
 
-    def __init__(self, value, name=None):
-        self.symbolic = self.name = str(name or value)
-        self.val = Tensor.device.to_device(value)
+    def __init__(self, data, name=None):
+        self.symbolic = self.name = str(name or data)
+        self.data = Tensor.device.to_device(data)
         self.grad = 0
 
         self.backward_fxns = [] 
         self.arguments = []
 
     def __repr__(self):
-        return f"Tensor({np.array2string(self.val, prefix=' '*7)})"
+        return f"Tensor({self.data!s})"
 
     def cpu(self):
-        return Tensor.device.to_cpu(self.val)
+        return Tensor.device.to_cpu(self.data)
 
     @property
     def shape(self):
-        return self.val.shape
+        return self.data.shape
 
     def __getitem__(self, idx):
-        return self.val[idx]
+        return self.data[idx]
 
     def _backward(self, dv):
         self.grad += dv
@@ -240,11 +241,11 @@ class Tensor(object):
                 (f"{x}={repr(y)}" for x,y in kwargs.items()))
             self.symbolic = f"{attr}({', '.join(symbolic_args)})"
 
-            args = tuple(x.val for x in (self, *operands))
-            self.val = forward(*args, **kwargs)
+            args = tuple(x.data for x in (self, *operands))
+            self.data = forward(*args, **kwargs)
 
             # save intermediate variables and (output) for backward pass
-            self.arguments.append((*operands, *args, self.val, kwargs))
+            self.arguments.append((*operands, *args, self.data, kwargs))
             self.backward_fxns.append(backward)
 
             return self
@@ -419,7 +420,6 @@ class Tensor(object):
     # ========== control flow ops ==========
 
     def fork(self):
-        self.debug += " fork "
 
         dv_fork = None
 
@@ -428,7 +428,7 @@ class Tensor(object):
             dv_fork = dv
             return dv
 
-        fork = Tensor(self.val)
+        fork = Tensor(self.data)
         fork.backward_fxns.append(fork_backward)
         fork.arguments.append((dict(),)) # empty args
 
@@ -481,4 +481,4 @@ class Adam(Optimizer):
         for t, m, v in zip(self.params, self.moment, self.cache):
             m[:] = b1 * m + (1.0 - b1) * t.grad
             v[:] = b2 * v + (1.0 - b2) * t.grad * t.grad
-            t.val = t.val - lr * m / (v ** 0.5 + eps)
+            t.data = t.data - lr * m / (v ** 0.5 + eps)

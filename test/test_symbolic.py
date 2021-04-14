@@ -9,14 +9,14 @@ def test_tanh():
 
     out = Tensor(a, 'a').tanh()
 
-    assert np.allclose(out.val, eval(out.symbolic))
+    assert np.allclose(out.data, eval(out.symbolic))
 
 def test_logsoftmax():
     a = np.random.randn(30, 3)
 
     out = Tensor(a, 'a').logsoftmax()
 
-    assert np.allclose(out.val, eval(out.symbolic))
+    assert np.allclose(out.data, eval(out.symbolic))
 
 def test_simple_classifier():
     a = np.random.randn(30, 2).astype(np.float32)
@@ -34,5 +34,5 @@ def test_simple_classifier():
 
     loss = Tensor(y, 'y').mul(out).mul(Tensor(-1.0)).sum(axis=1).mean()
 
-    assert (out.val == eval(out.symbolic)).all()
-    assert (loss.val == eval(loss.symbolic)).all()
+    assert (out.data == eval(out.symbolic)).all()
+    assert (loss.data == eval(loss.symbolic)).all()
