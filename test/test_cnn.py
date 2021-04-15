@@ -16,10 +16,10 @@ def test_simple_conv1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    conv1d_s.window_view(kernel_size=(2,), stride=1).dot(param_s, subscripts='abcd,abd->abc').sum()
+    conv1d_s.window_view(kernel_size=(2,), stride=1).einsum('abcd,abd->abc', param_s).sum()
     conv1d_s.backward()
 
-    assert np.allclose(a.detach().numpy(), conv1d_s.val)
+    assert np.allclose(a.detach().numpy(), conv1d_s.data)
     assert np.allclose(conv1d_p.grad, conv1d_s.grad)
     assert np.allclose(param_p.grad, param_s.grad)
 
@@ -69,7 +69,7 @@ def test_simple_conv2d():
     x.backward()
 
     # assert a.detach().numpy().ndim == x.val.ndim
-    assert (a.detach().numpy() == x.val).all()
+    assert (a.detach().numpy() == x.data).all()
     assert (w0.grad.detach().numpy() == w.grad).all()
     assert (x_pt.grad.detach().numpy() == x.grad).all()
 
@@ -89,7 +89,7 @@ def test_conv2d():
     out_simplegrad = Tensor(image).conv2d(c).sum()
     out_simplegrad.backward()
 
-    assert np.allclose(a.detach().numpy(), out_simplegrad.val)
+    assert np.allclose(a.detach().numpy(), out_simplegrad.data)
     assert np.allclose(w0.grad.detach().numpy(), c.grad)
     assert np.allclose(x.grad.detach().numpy(), out_simplegrad.grad)
 
@@ -108,7 +108,7 @@ def test_simple_maxpool1d():
     maxpool1d_p = maxpool1d_p(input_1d).sum()
     maxpool1d_p.backward()
 
-    assert np.allclose(maxpool1d_p.data.numpy(), maxpool1d.val)
+    assert np.allclose(maxpool1d_p.data.numpy(), maxpool1d.data)
     assert np.allclose(input_1d.grad, maxpool1d.grad)
 
 def test_simple_maxpool2d():
@@ -134,7 +134,7 @@ def test_simple_maxpool2d():
         maxpool2d.maxpool2d(kernel_size=(3,3)).sum()
         maxpool2d.backward()
 
-        assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.val)
+        assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.data)
         assert np.allclose(maxpool2d.grad, x.grad)
 
 def test_maxpool2d():
@@ -151,7 +151,7 @@ def test_maxpool2d():
     maxpool2d.maxpool2d(kernel_size=(3,3)).sum()
     maxpool2d.backward()
 
-    assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.val)
+    assert np.allclose(maxpool2d_p.detach().numpy(), maxpool2d.data)
     assert np.allclose(maxpool2d.grad, x.grad)
 
 
@@ -173,11 +173,11 @@ def test_simple_conv1d_maxpool1d():
     # ===== simplegrad =====
     param_s = Tensor(param_1d)
     conv1d_s = Tensor(input_1d)
-    conv1d_s.window_view(kernel_size=(3,), stride=1).dot(param_s, subscripts='abcd,abd->abc')
+    conv1d_s.window_view(kernel_size=(3,), stride=1).einsum('abcd,abd->abc', param_s)
     maxpool1d_s = conv1d_s.window_view(kernel_size=(3,), stride=1).max(axis=-1)
     maxpool1d_s.backward()
 
-    assert np.allclose(maxpool1d_p.detach().numpy(), maxpool1d_s.val)
+    assert np.allclose(maxpool1d_p.detach().numpy(), maxpool1d_s.data)
     assert np.allclose(conv1d_p.grad, conv1d_s.grad)
     assert np.allclose(param_p.grad, param_s.grad)
 
@@ -199,6 +199,6 @@ def test_conv2d_maxpool2d():
     out_simplegrad.maxpool2d(kernel_size=(3,3)).sum()
     out_simplegrad.backward()
 
-    assert np.allclose(maxpool2d_p.detach().numpy(), out_simplegrad.val)
+    assert np.allclose(maxpool2d_p.detach().numpy(), out_simplegrad.data)
     assert np.allclose(w0.grad.detach().numpy(), c.grad)
     assert np.allclose(x.grad.detach().numpy(), out_simplegrad.grad)

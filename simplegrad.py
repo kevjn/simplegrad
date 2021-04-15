@@ -192,6 +192,7 @@ np.pow = functools.partial(np.power, dtype=np.float32) # specify dtype to allow 
 np.mul = np.multiply
 _broadcast_to = np.broadcast_to
 np.broadcast_to = lambda x,y: _broadcast_to(x, y.shape)
+np.as_strided = lambda *args, **kwargs: np.lib.stride_tricks.as_strided(*args, **kwargs)
 np.to_device = lambda x: np.array(x, dtype=np.float32)
 np.to_cpu = lambda x: x
 
@@ -344,28 +345,31 @@ class Tensor(object):
 
         return dy, dx
 
-    def window_view_forward(x, kernel_size=(2,2), stride=1):
-        N, cin, *in_shape, kdims = *x.shape, len(kernel_size)
+    def as_strided_backward(dv, x, out, **kwargs):
+        assert dv.shape == out.shape
+        accum = np.zeros(x.shape)
+        kdims = out.ndim - x.ndim
+        kernel_size = out.shape[-kdims:]
+
+        slices = (slice(None),) * 2 # the first two dims are fixed
+        for idx in np.ndindex(out.shape[2:2+kdims]):
+            ws_slices = tuple(slice(i, i+sz) for i,sz in zip(idx, kernel_size))
+            accum[slices + ws_slices] += dv[slices + idx]
+
+        return accum
+
+    # ========== composite ops ==========
+
+    def window_view(self, kernel_size=(2,2), stride=1):
+        N, cin, *in_shape, kdims = *self.shape, len(kernel_size)
 
         # get window shape and strides
         truncated_out_shape = *((xin - kin) // 1 + 1 for xin, kin in zip(in_shape, kernel_size)),
         out_shape = N, cin, *truncated_out_shape, *kernel_size
-        out_strides = *x.strides[:2], *(xs*stride for xs in x.strides[-kdims:]), *x.strides[-kdims:]
+        out_strides = *self.data.strides[:2], *(xs*stride for xs in self.data.strides[-kdims:]), *self.data.strides[-kdims:]
 
         # return window view
-        return np.lib.stride_tricks.as_strided(x, shape=out_shape, strides=out_strides)
-    
-    def window_view_backward(dv, x, out, **kwargs):
-        assert dv.shape == out.shape
-        out[:] = 0
-        # can this be vectorized?
-        for i in np.ndindex(out.shape):
-            # accumulate gradient
-            out[i] += dv[i]
-
-        return x
-
-    # ========== composite ops ==========
+        return self.as_strided(shape=out_shape, strides=out_strides)
 
     def einsum(self, subscripts, *operands):
         return self.__getattr__('einsum')(*operands, subscripts=subscripts)
@@ -402,8 +406,7 @@ class Tensor(object):
 
     def conv2d(self, w, padding=0, stride=1):
         assert len(self.shape) == len(w.shape) == 4
-        return self.window_view(kernel_size=w.shape[-2:], stride=stride)\
-            ._einsum(w, subscripts='abcdef,gbef->agcd')
+        return self.window_view(kernel_size=w.shape[-2:], stride=stride).einsum('abcdef,gbef->agcd', w)
 
     def maxpool2d(self, kernel_size = (3,3), padding=0, stride=1):
         return self.window_view(kernel_size=kernel_size, stride=stride).max(axis=(-1, -2))
