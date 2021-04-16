@@ -7,6 +7,59 @@ import pyopencl as cl
 import pyopencl.array
 
 class Device(object):
+    class CPU:
+        class Array(np.ndarray):
+            def __new__(cls, input_array, symbolic=None):
+                obj = np.array(input_array, dtype=np.float32).view(cls)
+                obj.symbolic = str(symbolic or input_array)
+                return obj
+
+            def __array_finalize__(self, obj) -> None:
+                if obj is None: return
+                # This attribute should be maintained!
+                self.symbolic = getattr(obj, 'symbolic', None)
+
+            def __array_ufunc__(self, ufunc, method, *inputs, dtype=None, **kwargs):
+                args = tuple(self._symbolic_args(inputs, kwargs))
+                args += ("dtype=np.float32",) # require float32
+
+                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
+                output = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs, dtype=dtype))
+                output.symbolic = f"np.{ufunc.__name__}({', '.join(args)})"
+                return output
+
+            def __array_function__(self, func, types, inputs, kwargs):
+                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
+                out = Device.CPU.Array(func(*items, **kwargs))
+                out.symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
+
+                return out
+
+            def _symbolic_args(self, inputs, kwargs): 
+                return it.chain(
+                    (x.symbolic if isinstance(x, type(self)) else repr(x) for x in inputs),
+                    (f'{x}={repr(y)}' for x,y in kwargs.items()),
+                )
+
+        def __getattr__(self, attr): return getattr(np, attr)
+
+        def einsum(self, *operands, subscripts):
+            return np.einsum(subscripts, *operands)
+
+        def broadcast_to(self, x, y):
+            return np.broadcast_to(x, y.shape)
+
+        def relu(self, x): return np.maximum(x, 0)
+
+        def to_device(self, x, name=None): return Device.CPU.Array(x, name)
+
+        def to_cpu(self, x): return x.view(np.ndarray)
+
+        # naming conventions
+        pow = np.power
+        mul = np.multiply
+        as_strided = np.lib.stride_tricks.as_strided
+
     class GPU:
         def __init__(self):
             # initialize opencl
@@ -183,25 +236,13 @@ class Device(object):
                 return res
 
 # pretty print arrays
-np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
-# patch numpy operations
-_einsum = np.einsum
-np.einsum = lambda *args, subscripts: _einsum(subscripts, *args)
-np.relu = lambda x: np.maximum(x, 0)
-np.pow = functools.partial(np.power, dtype=np.float32) # specify dtype to allow int to neg int powers
-np.mul = np.multiply
-_broadcast_to = np.broadcast_to
-np.broadcast_to = lambda x,y: _broadcast_to(x, y.shape)
-np.as_strided = lambda *args, **kwargs: np.lib.stride_tricks.as_strided(*args, **kwargs)
-np.to_device = lambda x: np.array(x, dtype=np.float32)
-np.to_cpu = lambda x: x
+# np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 
 class Tensor(object):
-    device = np
+    device = Device.CPU()
 
     def __init__(self, data, name=None):
-        self.symbolic = self.name = str(name or data)
-        self.data = Tensor.device.to_device(data)
+        self.data = Tensor.device.to_device(data, name)
         self.grad = 0
 
         self.backward_fxns = [] 
@@ -238,10 +279,6 @@ class Tensor(object):
         backward = getattr(Tensor, f"{attr}_backward")
 
         def wrapper(*operands, **kwargs):
-            symbolic_args = it.chain((x.symbolic for x in (self, *operands)), \
-                (f"{x}={repr(y)}" for x,y in kwargs.items()))
-            self.symbolic = f"{attr}({', '.join(symbolic_args)})"
-
             args = tuple(x.data for x in (self, *operands))
             self.data = forward(*args, **kwargs)
 
@@ -259,7 +296,7 @@ class Tensor(object):
             axes = *np.arange(grad.ndim)[idx],
             if not axes:
                 return grad
-            return Tensor.device.sum(grad, axis=axes).reshape(shape)
+            return Tensor.device.reshape(Tensor.device.sum(grad, axis=axes), shape)
         @functools.wraps(backward)
         def wrapper(*args, shapes, **kwargs):
             return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
@@ -288,7 +325,7 @@ class Tensor(object):
 
     def sum_backward(dv, x, out, axis=None, keepdims=False):
         if x.ndim > dv.ndim:
-            dv = dv.reshape(*dv.shape, 1)
+            dv = Tensor.device.reshape(dv, (*dv.shape, 1))
         return Tensor.device.broadcast_to(dv, x)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
@@ -431,7 +468,7 @@ class Tensor(object):
             dv_fork = dv
             return dv
 
-        fork = Tensor(self.data)
+        fork = Tensor(self.data, name=self.data.symbolic)
         fork.backward_fxns.append(fork_backward)
         fork.arguments.append((dict(),)) # empty args
 
@@ -442,9 +479,6 @@ class Tensor(object):
 
         self.backward_fxns.append(parent_backward)
         self.arguments.append((dict(),)) # empty args
-
-        fork.symbolic = self.symbolic
-        fork.name = self.name # TODO: remove this?
 
         return fork
 

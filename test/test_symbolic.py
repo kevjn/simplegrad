@@ -1,6 +1,5 @@
 from simplegrad import Device, Tensor
 
-from numpy import einsum, exp, add, pow, mul, relu, max, log, sum
 import numpy as np
 np.random.seed(100)
 
@@ -9,14 +8,22 @@ def test_tanh():
 
     out = Tensor(a, 'a').tanh()
 
-    assert np.allclose(out.data, eval(out.symbolic))
+    assert np.allclose(out.data, eval(out.data.symbolic))
+
+def test_einsum():
+    a = np.random.randn(30, 2).astype(np.float32)
+    w0 = np.random.randn(2, 32).astype(np.float32)
+
+    out = Tensor(a, 'a').einsum('ij,jk->ik', Tensor(w0, 'w0'))
+
+    assert np.allclose(out.data, eval(out.data.symbolic))
 
 def test_logsoftmax():
     a = np.random.randn(30, 3)
 
     out = Tensor(a, 'a').logsoftmax()
 
-    assert np.allclose(out.data, eval(out.symbolic))
+    assert np.allclose(out.data, eval(out.data.symbolic))
 
 def test_simple_classifier():
     a = np.random.randn(30, 2).astype(np.float32)
@@ -34,5 +41,7 @@ def test_simple_classifier():
 
     loss = Tensor(y, 'y').mul(out).mul(Tensor(-1.0)).sum(axis=1).mean()
 
-    assert (out.data == eval(out.symbolic)).all()
-    assert (loss.data == eval(loss.symbolic)).all()
+    # loss.backward()
+
+    assert (out.data == eval(out.data.symbolic)).all()
+    assert (loss.data == eval(loss.data.symbolic)).all()
