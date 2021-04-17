@@ -41,7 +41,9 @@ def test_simple_classifier():
 
     loss = Tensor(y, 'y').mul(out).mul(Tensor(-1.0)).sum(axis=1).mean()
 
-    # loss.backward()
+    loss.backward()
 
     assert (out.data == eval(out.data.symbolic)).all()
+    assert (out.grad == eval(out.grad.symbolic)).all()
     assert (loss.data == eval(loss.data.symbolic)).all()
+    assert (loss.grad == eval(loss.grad.symbolic)).all()
