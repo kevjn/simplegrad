@@ -22,16 +22,16 @@ class Device(object):
             def __array_ufunc__(self, ufunc, method, *inputs, dtype=None, **kwargs):
                 args = tuple(self._symbolic_args(inputs, kwargs))
                 args += ("dtype=np.float32",) # require float32
+                symbolic = f"np.{ufunc.__name__}({', '.join(args)})"
 
                 items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
-                output = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs, dtype=dtype))
-                output.symbolic = f"np.{ufunc.__name__}({', '.join(args)})"
+                output = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs, dtype=dtype), symbolic)
                 return output
 
             def __array_function__(self, func, types, inputs, kwargs):
                 items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
-                out = Device.CPU.Array(func(*items, **kwargs))
-                out.symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
+                symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
+                out = Device.CPU.Array(func(*items, **kwargs), symbolic)
 
                 return out
 
@@ -51,6 +51,9 @@ class Device(object):
 
         def relu(self, x): return np.maximum(x, 0)
 
+        def as_strided(self, *args, **kwargs):
+            return np.lib.stride_tricks.as_strided(*args, **kwargs)
+
         def to_device(self, x, name=None): return Device.CPU.Array(x, name)
 
         def to_cpu(self, x): return x.view(np.ndarray)
@@ -58,7 +61,11 @@ class Device(object):
         # naming conventions
         pow = np.power
         mul = np.multiply
-        as_strided = np.lib.stride_tricks.as_strided
+
+        @classmethod
+        def arange(cls, n):
+            arr = np.arange(n)
+            return cls.Array(arr, np.array2string(arr.astype(np.float32), separator=', '))
 
     class GPU:
         def __init__(self):
@@ -329,20 +336,18 @@ class Tensor(object):
         return Tensor.device.broadcast_to(dv, x)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
-        x = x.copy() # temp fix
-        # TODO: this section only works for cpu atm
-        x = Tensor.device.to_cpu(x)
-        dv = Tensor.device.to_cpu(dv)
-
         if keepdims:
             dv = dv.squeeze() # remove empty dims
-        r = x.reshape(*dv.shape, -1) # flatten reduced axes
-        max_idx = np.argmax(r, axis=-1)
-        r[:] = 0
-        r[(*np.indices(r.shape[:-1]), max_idx)] = dv
+        r = Tensor.device.reshape(x, (*dv.shape, -1)) # flatten reduced axes
+        max_idx = Tensor.device.argmax(r, axis=-1)
 
-        x = Tensor.device.to_device(x)
-        return x
+        # add one empty dimension for broadcasting
+        max_idx = Tensor.device.reshape(max_idx, (*max_idx.shape, 1))
+        dv = Tensor.device.reshape(dv, (*dv.shape, 1))
+
+        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1]))
+        r = Tensor.device.mul(mask, dv)
+        return Tensor.device.reshape(r, x.shape)
 
     # ========== binary ops ==========
 
