@@ -165,13 +165,13 @@ class Device(object):
             return Device.GPU.Array.from_numpy(np.arange(n))
 
         class Parser(object):
-            def default(kernel, *args, **kwargs):
+            def elementwise(kernel, *args, **kwargs):
                 # allocate output buffer on device
                 res = Device.GPU.Array.empty(args[0].shape)
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
-            def binary(kernel, *args, **kwargs):
+            def broadcast(kernel, *args, **kwargs):
                 assert all(arg.ndim > 0 for arg in args), "operands needs to be atleast 1d"
                 res_shape = np.broadcast_shapes(*(x.shape for x in args))
                 res = Device.GPU.Array.empty(res_shape)
@@ -284,12 +284,12 @@ class Device(object):
             def axis(x, ax):
                 return (*range(x.ndim),) if ax is None else ax if type(ax) is tuple else ax if ax >= 0 else x.ndim + ax
 
-            def reduction(kernel, x, axis=None, keepdims=False, **kwargs):
+            def reduce(kernel, x, axis=None, keepdims=False, **kwargs):
                 axis = Device.GPU.Parser.axis(x, axis)
 
                 if type(axis) is tuple:
                     for ax in sorted(axis, reverse=True):
-                        x = Device.GPU.Parser.reduction(kernel, x, axis=ax)
+                        x = Device.GPU.Parser.reduce(kernel, x, axis=ax)
                     return x
 
                 strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)

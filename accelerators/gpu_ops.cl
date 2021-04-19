@@ -1,18 +1,37 @@
-__kernel void relu__default(__global const float *a_g, __global float *res_g)
+__kernel void relu__elementwise(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = max(a, (float)0.);
 }
 
-__kernel void greater_equal__default(__global const float *a_g, __global float *b_g, __global float *res_g)
+__kernel void greater_equal__elementwise(__global const float *a_g, __global float *b_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = a >= b_g[0];
 }
 
-__kernel void pow__binary(__global const float *x_g,
+__kernel void equal__broadcast(__global const float *x_g,
+                          __global const int* x_strides,
+                          __global const float *y_g, 
+                          __global const int* y_strides,
+                          __global float *res_g,
+                          __const int res_dims,
+                          __global int *res_strides)
+{
+  int i = 0, ix = 0, iy = 0;
+  for(int dim = 0; dim < res_dims; dim++)
+  {
+    i += get_global_id(dim) * res_strides[dim];
+    ix += get_global_id(dim) * x_strides[dim];
+    iy += get_global_id(dim) * y_strides[dim];
+  }
+
+  res_g[i] = x_g[ix] == y_g[iy];
+}
+
+__kernel void pow__broadcast(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -32,7 +51,7 @@ __kernel void pow__binary(__global const float *x_g,
 }
 
 
-__kernel void add__binary(__global const float *x_g,
+__kernel void add__broadcast(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -52,7 +71,7 @@ __kernel void add__binary(__global const float *x_g,
   res_g[i] = x_g[ix] + y_g[iy];
 }
 
-__kernel void max__reduction(__global const float* buffer,
+__kernel void max__reduce(__global const float* buffer,
             __global const int* strides,
             __global const int* anchored_axes,
             __const int reduced_axis,
@@ -79,7 +98,7 @@ __kernel void max__reduction(__global const float* buffer,
   result[idx] = accum;
 }
 
-__kernel void argmax__reduction(__global const float* buffer,
+__kernel void argmax__reduce(__global const float* buffer,
             __global const int* strides,
             __global const int* anchored_axes,
             __const int reduced_axis,
@@ -112,14 +131,14 @@ __kernel void argmax__reduction(__global const float* buffer,
   result[idx] = max_idx;
 }
 
-__kernel void exp__default(__global const float *a_g, __global float *res_g)
+__kernel void exp__elementwise(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
   res_g[gid] = exp(a);
 }
 
-__kernel void log__default(__global const float *a_g, __global float *res_g)
+__kernel void log__elementwise(__global const float *a_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
@@ -149,7 +168,7 @@ __kernel void log__default(__global const float *a_g, __global float *res_g)
 //          __global const int* reult_strides: strides for the output array (float aligned)
 
 __kernel
-void sum__reduction(__global const float* buffer,
+void sum__reduce(__global const float* buffer,
             __global const int* strides,
             __global const int* anchored_axes,
             __const int reduced_axis,
@@ -176,7 +195,7 @@ void sum__reduction(__global const float* buffer,
   result[idx] = accum;
 }
 
-__kernel void broadcast_to__binary(__global const float *dv_g,
+__kernel void broadcast_to__broadcast(__global const float *dv_g,
                           __global const int* dv_strides,
                           __global const float *x_g, 
                           __global const int* x_strides,
@@ -226,7 +245,7 @@ void einsum__einsum(__global const float* x_g,
 }
 
 __kernel 
-void mul__binary(__global const float *x_g,
+void mul__broadcast(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
