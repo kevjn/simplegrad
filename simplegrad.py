@@ -68,6 +68,73 @@ class Device(object):
             return cls.Array(arr, np.array2string(arr.astype(np.float32), separator=', '))
 
     class GPU:
+        class Array:
+            def __init__(self, shape):
+                self.dtype = np.dtype(np.float32)
+                self.size = int(np.prod(shape))
+                self.shape = shape
+                self.strides = (self.dtype.itemsize, *np.multiply.accumulate(shape[:0:-1]) * self.dtype.itemsize)[::-1]
+                self.ndim = len(shape)
+                self.nbytes = self.dtype.itemsize * self.size
+                self.symbolic = 'temp'
+
+                assert self.strides == np.empty(tuple(shape)).astype(np.float32).strides
+
+            def __repr__(self):
+                return repr(self.get())
+
+            for dunder in ('add', 'pow', 'mul'): # temp fix
+                locals()[f'__{dunder}__'] = lambda self, x, __f=dunder: getattr(Tensor.device, __f)(self, x)
+            
+            def __sub__(self, other): return Tensor.device.add(self, Tensor.device.mul(other, Tensor.device.to_device(-1)))
+            def __truediv__(self, other): return Tensor.device.mul(self, Tensor.device.pow(other, Tensor.device.to_device(-1)))
+
+            def get(self):
+                arr = np.empty(self.shape, np.float32)
+                cl.enqueue_copy(Device.GPU.queue, arr, self.data)
+                return arr
+
+            def reshape(self, shape):
+                if -1 in shape:
+                    shape = tuple(x if x > 0 else 
+                            int(abs(np.prod(self.shape) / np.prod(shape)))
+                            for x in shape)
+                result = Device.GPU.Array(shape)
+                result.data = self.data
+                return result
+
+            def squeeze(self):
+                shape = tuple(np.compress(np.array(self.shape) > 1, self.shape))
+                result = Device.GPU.Array(shape)
+                result.data = self.data
+                return result
+
+            def transpose(self, order):
+                self.shape = tuple(np.take(self.shape, order))
+                self.strides = tuple(np.take(self.strides, order))
+                return self
+
+            @classmethod
+            def from_numpy(cls, arr):
+                arr = arr.astype(np.float32) # atleast1d
+                obj = cls(arr.shape)
+                obj.data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE |
+                              cl.mem_flags.COPY_HOST_PTR, hostbuf=arr)
+                return obj
+
+            @classmethod
+            def empty(cls, shape):
+                obj = cls(shape)
+                obj.data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE, obj.nbytes)
+                return obj
+
+            def copy(self):
+                result = Device.GPU.Array(self.shape)
+                data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE, self.nbytes)
+                cl.enqueue_copy(Device.GPU.queue, data, self.data, byte_count=self.nbytes)
+                result.data = data
+                return result
+
         def __init__(self):
             # initialize opencl
             Device.GPU.ctx = cl.create_some_context()
@@ -82,27 +149,32 @@ class Device(object):
                 wrapped_gpu_op = functools.partial(parser, functools.partial(kernel, self.queue))
                 setattr(self, name, wrapped_gpu_op)
 
-        def to_device(self, x):
-            if isinstance(x, np.ndarray):
-                return cl.array.to_device(Device.GPU.queue, x.astype(np.float32))
-            if isinstance(x, cl.array.Array):
+        def to_device(self, x, name=None):
+            if isinstance(x, Device.GPU.Array):
                 return x.copy()
-            return cl.array.to_device(Device.GPU.queue, np.array([x], dtype=np.float32))
+            return self.Array.from_numpy(np.atleast_1d(x))
 
         def to_cpu(self, x):
             return x.get()
 
+        def reshape(self, x, shape):
+            return x.reshape(shape)
+
+        @classmethod
+        def arange(self, n):
+            return Device.GPU.Array.from_numpy(np.arange(n))
+
         class Parser(object):
             def default(kernel, *args, **kwargs):
                 # allocate output buffer on device
-                res = cl.array.empty_like(args[0])
+                res = Device.GPU.Array.empty(args[0].shape)
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
             def binary(kernel, *args, **kwargs):
                 assert all(arg.ndim > 0 for arg in args), "operands needs to be atleast 1d"
                 res_shape = np.broadcast_shapes(*(x.shape for x in args))
-                res = cl.array.empty(Device.GPU.queue, res_shape, np.float32)
+                res = Device.GPU.Array.empty(res_shape)
                 res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
 
                 strides = ((cl.array.to_device(Device.GPU.queue, 
@@ -184,7 +256,7 @@ class Device(object):
                     axis = np.take(yorder, [y_subs.index(s) for s in broadcasted_subs_x])
                     xstrides = np.insert(xstrides, axis, 0)
 
-                res = cl.array.empty(Device.GPU.queue, res_shape, np.float32)
+                res = Device.GPU.Array.empty(res_shape)
 
                 res_strides = not res.ndim < max(x.ndim, y.ndim) and res.strides or \
                     tuple(np.insert(res.strides, out_subs.index(reduced_subscript), 0))
@@ -232,7 +304,7 @@ class Device(object):
 
                 anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
 
-                res = cl.array.empty(Device.GPU.queue, (*global_work_size, *[1] * keepdims * (x.ndim - global_work_size.size)), np.float32)
+                res = Device.GPU.Array.empty((*global_work_size, *[1] * keepdims * (x.ndim - global_work_size.size)))
                 res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
                 
@@ -269,7 +341,7 @@ class Tensor(object):
         return self.data[idx]
 
     def _backward(self, dv):
-        self.grad += dv
+        self.grad = dv
         while self.backward_fxns:
             backward = self.backward_fxns.pop()
             *args, kwargs = self.grad, *self.arguments.pop()
@@ -352,7 +424,8 @@ class Tensor(object):
     # ========== binary ops ==========
 
     def pow_backward(dv, operand, x, y, out):
-        return Tensor.device.mul(dv, Tensor.device.mul(y, Tensor.device.pow(x, y-1.0)))
+        return Tensor.device.mul(dv, Tensor.device.mul(y, 
+               Tensor.device.pow(x, Tensor(y).sub(Tensor(1.0)).data)))
 
     @propagate
     @unbroadcast
@@ -491,11 +564,11 @@ class Optimizer:
     # TODO: fix decay
     def __init__(self, params, *args, decay=0.):
         self.params = params
-        self.args = args
-        self.t = 0
+        self.args = tuple(map(Tensor.device.to_device, args))
+        self.t = Tensor.device.to_device(0)
 
     def step(self):
-        self.t += 1
+        self.t = Tensor.device.add(self.t, Tensor.device.to_device(1))
         self._step(self.t, *self.args)
 
     @abstractmethod
@@ -513,14 +586,15 @@ class Adam(Optimizer):
 
         super().__init__(params, *(learning_rate, epsilon, beta1, beta2), **kwargs)
 
-        self.moment = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
-        self.cache =  [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
+        self.m = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
+        self.v =  [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
+        td = Tensor.device.to_device # TODO: make this implicit
         # bias correction
-        lr *= ((1 - b2**t)**0.5) / (1.0 - b1**t)
+        lr = lr * ((td(1) - b2**t)**td(0.5)) / (td(1.0) - b1**t)
         
-        for t, m, v in zip(self.params, self.moment, self.cache):
-            m[:] = b1 * m + (1.0 - b1) * t.grad
-            v[:] = b2 * v + (1.0 - b2) * t.grad * t.grad
-            t.data = t.data - lr * m / (v ** 0.5 + eps)
+        for i,t in enumerate(self.params):
+            self.m[i] = b1 * self.m[i] + (td(1.0) - b1) * t.grad
+            self.v[i] = b2 * self.v[i] + (td(1.0) - b2) * t.grad * t.grad
+            t.data = t.data - lr * self.m[i] / (self.v[i] ** td(0.5) + eps)
