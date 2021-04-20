@@ -9,9 +9,10 @@ import pyopencl.array
 class Device(object):
     class CPU:
         class Array(np.ndarray):
-            def __new__(cls, input_array, symbolic=None):
-                obj = np.array(input_array, dtype=np.float32).view(cls)
-                obj.symbolic = str(symbolic or input_array)
+            def __new__(cls, arr, symbolic=None):
+                arr = np.array(arr, dtype=np.float32)
+                obj = arr.view(cls)
+                obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf))
                 return obj
 
             def __array_finalize__(self, obj) -> None:
@@ -54,7 +55,7 @@ class Device(object):
         def as_strided(self, *args, **kwargs):
             return np.lib.stride_tricks.as_strided(*args, **kwargs)
 
-        def to_device(self, x, name=None): return Device.CPU.Array(x, name)
+        def to_device(self, x, name=None): return Device.CPU.Array(np.atleast_1d(x), name)
 
         def to_cpu(self, x): return x.view(np.ndarray)
 
@@ -64,8 +65,7 @@ class Device(object):
 
         @classmethod
         def arange(cls, n):
-            arr = np.arange(n)
-            return cls.Array(arr, np.array2string(arr.astype(np.float32), separator=', '))
+            return cls.Array(np.arange(n))
 
     class GPU:
         class Array:
@@ -85,9 +85,13 @@ class Device(object):
 
             for dunder in ('add', 'pow', 'mul'): # temp fix
                 locals()[f'__{dunder}__'] = lambda self, x, __f=dunder: getattr(Tensor.device, __f)(self, x)
+                locals()[f'__r{dunder}__'] = lambda self, x, __f=dunder: getattr(Tensor.device, __f)(x, self)
             
             def __sub__(self, other): return Tensor.device.add(self, Tensor.device.mul(other, Tensor.device.to_device(-1)))
+            def __rsub__(self, other): return Tensor.device.add(other, Tensor.device.mul(self, Tensor.device.to_device(-1)))
+
             def __truediv__(self, other): return Tensor.device.mul(self, Tensor.device.pow(other, Tensor.device.to_device(-1)))
+            def __rtruediv__(self, other): return Tensor.device.mul(other, Tensor.device.pow(self, Tensor.device.to_device(-1)))
 
             def get(self):
                 arr = np.empty(self.shape, np.float32)
@@ -146,7 +150,7 @@ class Device(object):
                 assert len(tokens) == 2
                 name, parser = tokens
                 parser = getattr(self.Parser, parser)
-                wrapped_gpu_op = functools.partial(parser, functools.partial(kernel, self.queue))
+                wrapped_gpu_op = self.Parser.wrapper(parser, functools.partial(kernel, self.queue))
                 setattr(self, name, wrapped_gpu_op)
 
         def to_device(self, x, name=None):
@@ -165,6 +169,13 @@ class Device(object):
             return Device.GPU.Array.from_numpy(np.arange(n))
 
         class Parser(object):
+            def wrapper(parser, kernel):
+                def _wrapper(*args, **kwargs):
+                    args = tuple(arg if isinstance(arg, Device.GPU.Array) 
+                                 else Tensor.device.to_device(arg) for arg in args)
+                    return parser(kernel, *args, **kwargs)
+                return _wrapper
+
             def elementwise(kernel, *args, **kwargs):
                 # allocate output buffer on device
                 res = Device.GPU.Array.empty(args[0].shape)
@@ -424,8 +435,7 @@ class Tensor(object):
     # ========== binary ops ==========
 
     def pow_backward(dv, operand, x, y, out):
-        return Tensor.device.mul(dv, Tensor.device.mul(y, 
-               Tensor.device.pow(x, Tensor(y).sub(Tensor(1.0)).data)))
+        return Tensor.device.mul(dv, Tensor.device.mul(y, Tensor.device.pow(x, y-1.0)))
 
     @propagate
     @unbroadcast
@@ -590,11 +600,10 @@ class Adam(Optimizer):
         self.v =  [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
-        td = Tensor.device.to_device # TODO: make this implicit
         # bias correction
-        lr = lr * ((td(1) - b2**t)**td(0.5)) / (td(1.0) - b1**t)
+        lr = lr * ((1 - b2**t)**0.5) / (1.0 - b1**t)
         
         for i,t in enumerate(self.params):
-            self.m[i] = b1 * self.m[i] + (td(1.0) - b1) * t.grad
-            self.v[i] = b2 * self.v[i] + (td(1.0) - b2) * t.grad * t.grad
-            t.data = t.data - lr * self.m[i] / (self.v[i] ** td(0.5) + eps)
+            self.m[i] = b1 * self.m[i] + (1.0 - b1) * t.grad
+            self.v[i] = b2 * self.v[i] + (1.0 - b2) * t.grad * t.grad
+            t.data = t.data - lr * self.m[i] / (self.v[i] ** 0.5 + eps)
