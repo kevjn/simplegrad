@@ -82,16 +82,12 @@ class Device(object):
 
             def __repr__(self):
                 return repr(self.get())
-
-            for dunder in ('add', 'pow', 'mul'): # temp fix
-                locals()[f'__{dunder}__'] = lambda self, x, __f=dunder: getattr(Tensor.device, __f)(self, x)
-                locals()[f'__r{dunder}__'] = lambda self, x, __f=dunder: getattr(Tensor.device, __f)(x, self)
             
-            def __sub__(self, other): return Tensor.device.add(self, Tensor.device.mul(other, Tensor.device.to_device(-1)))
-            def __rsub__(self, other): return Tensor.device.add(other, Tensor.device.mul(self, Tensor.device.to_device(-1)))
+            def __sub__(x, y): return Tensor.device.add(x, Tensor.device.mul(y, Tensor.device.to_device(-1)))
+            def __rsub__(x, y): return Tensor.device.add(y, Tensor.device.mul(x, Tensor.device.to_device(-1)))
 
-            def __truediv__(self, other): return Tensor.device.mul(self, Tensor.device.pow(other, Tensor.device.to_device(-1)))
-            def __rtruediv__(self, other): return Tensor.device.mul(other, Tensor.device.pow(self, Tensor.device.to_device(-1)))
+            def __truediv__(x, y): return Tensor.device.mul(x, Tensor.device.pow(y, Tensor.device.to_device(-1)))
+            def __rtruediv__(x, y): return Tensor.device.mul(y, Tensor.device.pow(x, Tensor.device.to_device(-1)))
 
             def get(self):
                 arr = np.empty(self.shape, np.float32)
@@ -152,6 +148,10 @@ class Device(object):
                 parser = getattr(self.Parser, parser)
                 wrapped_gpu_op = self.Parser.wrapper(parser, functools.partial(kernel, self.queue))
                 setattr(self, name, wrapped_gpu_op)
+
+                if f"__{name}__" in dir(int):
+                    setattr(Device.GPU.Array, f"__{name}__", wrapped_gpu_op)
+                    setattr(Device.GPU.Array, f"__r{name}__", lambda x,y: wrapped_gpu_op(y,x))
 
         def to_device(self, x, name=None):
             if isinstance(x, Device.GPU.Array):
