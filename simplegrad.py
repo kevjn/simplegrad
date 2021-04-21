@@ -212,24 +212,17 @@ class Device(object):
                     # TODO: this will not work in all cases
                     out_subs = max(x_subs, y_subs, key=len)
 
-                reduced_subscripts = (set(x_subs) | set(y_subs)) - set(out_subs)
-
                 xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
 
                 # deduce output shape
                 res_shape = tuple((s in x_subs and x.shape[x_subs.index(s)]) \
                           or (s in y_subs and y.shape[y_subs.index(s)]) for s in out_subs)
 
-                # insert any reduced subscripts in center of out_subs
-                L,R = ["".join(chr(c) for c in s) for s in np.array_split([ord(s) for s in out_subs], 2)]
-                out_subs = "".join((L, *reduced_subscripts, R))
-
-                # argsort operands relative to out_subs
-                xorder, yorder = (sorted(range(len(subs)), key=lambda k: out_subs.index(subs[k])) for subs in (x_subs, y_subs))
-
+                reduced_subscripts = (set(x_subs) | set(y_subs)) - set(out_subs)
                 if not reduced_subscripts:
-                    x = x.transpose(xorder)
-                    y = y.transpose(yorder)
+                    # transpose operands relative to out_subs
+                    x = x.transpose([out_subs.index(x) for x in x_subs])
+                    y = y.transpose([out_subs.index(x) for x in y_subs])
 
                     # standard multiplication
                     return Tensor.device.mul(x, y)
@@ -248,30 +241,11 @@ class Device(object):
                 assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
                 reduced_axis_size = x.shape[reduced_axis_x]
 
-                # set stride of reduced dimension to 0 and sort
-                np.put(xstrides, reduced_axis_x, 0)
-                xstrides = xstrides[xorder]
-                np.put(ystrides, reduced_axis_y, 0)
-                ystrides = ystrides[yorder]
-
-                # extend strides with broadcasted dimensions if needed
-                broadcasted_subs_y = len(y_subs) < len(x_subs) and set(x_subs) - set(y_subs)
-                if broadcasted_subs_y:
-                    axis = np.take(xorder, [x_subs.index(s) for s in broadcasted_subs_y])
-                    # trim if needed
-                    axis = axis[(y.ndim + axis.size) - x.ndim:]
-                    ystrides = np.insert(ystrides, axis, 0)
-
-                broadcasted_subs_x = len(x_subs) < len(y_subs) and set(y_subs) - set(x_subs)
-                if broadcasted_subs_x:
-                    axis = np.take(yorder, [y_subs.index(s) for s in broadcasted_subs_x])
-                    xstrides = np.insert(xstrides, axis, 0)
+                ystrides = np.array([s in y_subs and y.strides[y_subs.index(s)]//4 for s in out_subs], dtype=np.int32)
+                xstrides = np.array([s in x_subs and x.strides[x_subs.index(s)]//4 for s in out_subs], dtype=np.int32)
 
                 res = Device.GPU.Array.empty(res_shape)
-
-                res_strides = not res.ndim < max(x.ndim, y.ndim) and res.strides or \
-                    tuple(np.insert(res.strides, out_subs.index(reduced_subscript), 0))
-                res_strides = np.array(res_strides, dtype=np.int32) // 4
+                res_strides = np.array(res.strides, dtype=np.int32) // 4
 
                 # convert to opencl
                 reduced_axis_size = np.int32(reduced_axis_size)
@@ -283,11 +257,8 @@ class Device(object):
 
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
-                max_shape = tuple(map(lambda x: x[0] or max(x[1], x[2]), 
-                                it.zip_longest(res.shape, x.shape, y.shape, fillvalue=0)))
-
                 # call kernel
-                kernel(max_shape, None, x.data, y.data, x_strides.data, y_strides.data, \
+                kernel(res_shape, None, x.data, y.data, x_strides.data, y_strides.data, \
                     reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, res_strides.data)
 
                 return res
