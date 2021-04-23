@@ -47,9 +47,6 @@ class Device(object):
         def einsum(self, *operands, subscripts):
             return np.einsum(subscripts, *operands)
 
-        def broadcast_to(self, x, y):
-            return np.broadcast_to(x, y.shape)
-
         def relu(self, x): return np.maximum(x, 0)
 
         def as_strided(self, *args, **kwargs):
@@ -387,7 +384,7 @@ class Tensor(object):
     def sum_backward(dv, x, out, axis=None, keepdims=False):
         if x.ndim > dv.ndim:
             dv = Tensor.device.reshape(dv, (*dv.shape, 1))
-        return Tensor.device.broadcast_to(dv, x)
+        return Tensor.device.broadcast_to(dv, x.shape)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
         if keepdims:
@@ -568,7 +565,7 @@ class Adam(Optimizer):
         super().__init__(params, *(learning_rate, epsilon, beta1, beta2), **kwargs)
 
         self.m = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
-        self.v =  [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
+        self.v = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
         # bias correction
