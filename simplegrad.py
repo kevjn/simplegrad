@@ -87,11 +87,11 @@ class Device(object):
             def __rtruediv__(x, y): return Tensor.device.mul(y, Tensor.device.pow(x, Tensor.device.to_device(-1)))
 
             def get(self):
-                arr = np.empty(self.shape, np.float32)
-                cl.enqueue_copy(Device.GPU.queue, arr, self.data)
-                return arr
+                res = np.empty(self.data.size // 4, np.float32)
+                cl.enqueue_copy(Device.GPU.queue, res, self.data)
+                return np.lib.stride_tricks.as_strided(res, self.shape, self.strides)
 
-            def reshape(self, shape):
+            def reshape(self, *shape):
                 if -1 in shape:
                     shape = tuple(x if x > 0 else 
                             int(abs(np.prod(self.shape) / np.prod(shape)))
@@ -106,10 +106,12 @@ class Device(object):
                 result.data = self.data
                 return result
 
-            def transpose(self, order):
-                self.shape = tuple(np.take(self.shape, order))
-                self.strides = tuple(np.take(self.strides, order))
-                return self
+            def transpose(self, *order):
+                shape = tuple(np.take(self.shape, order))
+                result = Device.GPU.Array(shape)
+                result.strides = tuple(np.take(self.strides, order))
+                result.data = self.data
+                return result
 
             @classmethod
             def from_numpy(cls, arr):
@@ -159,7 +161,7 @@ class Device(object):
             return x.get()
 
         def reshape(self, x, shape):
-            return x.reshape(shape)
+            return x.reshape(*shape)
 
         @classmethod
         def arange(self, n):
@@ -179,20 +181,31 @@ class Device(object):
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
-            def broadcast(kernel, *args, **kwargs):
-                assert all(arg.ndim > 0 for arg in args), "operands needs to be atleast 1d"
-                res_shape = np.broadcast_shapes(*(x.shape for x in args))
+            def broadcast(kernel, x, y, **kwargs):
+                assert x.ndim > 0 and y.ndim > 0, "operands needs to be atleast 1d"
+
+                res_shape = np.broadcast_shapes(x.shape, y.shape)
+                xstrides = np.arange(np.prod(x.shape), dtype=np.int32).reshape(x.shape)
+                ystrides = np.arange(np.prod(y.shape), dtype=np.int32).reshape(y.shape)
+
+                xstrides.strides = x.strides
+                ystrides.strides = y.strides
+
+                xstrides = np.broadcast_to(xstrides, res_shape).flatten()
+                ystrides = np.broadcast_to(ystrides, res_shape).flatten()
+
                 res = Device.GPU.Array.empty(res_shape)
-                res_strides = cl.array.to_device(Device.GPU.queue, np.array(res.strides, dtype=np.int32) // 4)
+                res_strides = np.arange(np.prod(res_shape))
+                
+                # convert to opencl
+                strides = [cl.array.to_device(Device.GPU.queue, x.astype(np.int32)) for x in 
+                                             (xstrides, ystrides, res_strides)]
 
-                strides = ((cl.array.to_device(Device.GPU.queue, 
-                            (np.equal(np.pad(x.shape, (res.ndim-x.ndim, 0)), res.shape) * 
-                            np.pad(x.strides, (res.ndim-x.ndim, 0)) // 4).astype(np.int32)).data)
-                            for x in args)
+                args = (x, y, res)
+                args = tuple(it.chain(*zip((a for a in args), strides)))
 
-                args = it.chain(*zip((a.data for a in args), strides), (res.data, np.int32(res.ndim), res_strides.data))
+                kernel([np.prod(res_shape)], None, *(arg.data for arg in args))
 
-                kernel(res.shape, None, *args)
                 return res
 
             def einsum(kernel, x, y, subscripts):
@@ -212,14 +225,13 @@ class Device(object):
                 xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
 
                 # deduce output shape
-                res_shape = tuple((s in x_subs and x.shape[x_subs.index(s)]) \
-                          or (s in y_subs and y.shape[y_subs.index(s)]) for s in out_subs)
+                res_shape = tuple([y.shape[y_subs.find(s)], x.shape[x_subs.find(s)]][s in x_subs] for s in out_subs)
 
                 reduced_subscripts = (set(x_subs) | set(y_subs)) - set(out_subs)
                 if not reduced_subscripts:
                     # transpose operands relative to out_subs
-                    x = x.transpose([out_subs.index(x) for x in x_subs])
-                    y = y.transpose([out_subs.index(x) for x in y_subs])
+                    x = x.transpose(*[out_subs.index(x) for x in x_subs])
+                    y = y.transpose(*[out_subs.index(x) for x in y_subs])
 
                     # standard multiplication
                     return Tensor.device.mul(x, y)
@@ -384,7 +396,7 @@ class Tensor(object):
     def sum_backward(dv, x, out, axis=None, keepdims=False):
         if x.ndim > dv.ndim:
             dv = Tensor.device.reshape(dv, (*dv.shape, 1))
-        return Tensor.device.broadcast_to(dv, x.shape)
+        return Tensor.device.broadcast_to(dv, x)
     
     def max_backward(dv, x, out, axis=None, keepdims=False):
         if keepdims:
