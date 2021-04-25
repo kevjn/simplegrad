@@ -21,11 +21,11 @@ def equal_sum_over_all_axes(arr):
 def equal_add(a: np.ndarray, b: np.ndarray):
     tensor_pytorch = torch.tensor(a).add(torch.tensor(b))
     tensor_simplegrad = Tensor(a).add(Tensor(b))
-    return np.allclose(tensor_simplegrad.data.get(), tensor_pytorch.data.numpy())
+    return np.allclose(tensor_simplegrad.data.get(), tensor_pytorch.data.numpy(), atol=1e-07)
 
 def equal_einsum(subscripts, a: np.ndarray, b: np.ndarray):
-    res_gpu = Tensor(a).einsum(subscripts, Tensor(b)).data
     res_cpu = np.einsum(subscripts, a, b)
+    res_gpu = Tensor(a).einsum(subscripts, Tensor(b)).data
     return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-06)
 
 def test_sum_reduction_kernel():
@@ -165,6 +165,13 @@ def test_broadcasting_add():
     a = np.random.randn(1)
     b = np.random.randn(3,3,3)
     assert equal_add(a, b)
+
+def test_multidimensional_add():
+    a = np.random.randn(5,6,7,8,9)
+    b = np.random.randn(4,5,6,7,8,9)
+
+    assert equal_add(a, b)
+    assert equal_add(b, a)
 
 def test_simple_backward_with_broadcasting():
     a = np.random.randn(10,10)
