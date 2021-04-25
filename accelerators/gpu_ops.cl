@@ -17,16 +17,13 @@ __kernel void equal__broadcast(__global const float *x_g,
                           __global const float *y_g, 
                           __global const int* y_strides,
                           __global float *res_g,
-                          __const int res_dims,
                           __global int *res_strides)
 {
-  int i = 0, ix = 0, iy = 0;
-  for(int dim = 0; dim < res_dims; dim++)
-  {
-    i += get_global_id(dim) * res_strides[dim];
-    ix += get_global_id(dim) * x_strides[dim];
-    iy += get_global_id(dim) * y_strides[dim];
-  }
+  int gid = get_global_id(0);
+
+  int i = res_strides[gid];
+  int ix = x_strides[gid];
+  int iy = y_strides[gid];
 
   res_g[i] = x_g[ix] == y_g[iy];
 }
@@ -36,16 +33,13 @@ __kernel void pow__broadcast(__global const float *x_g,
                           __global const float *y_g, 
                           __global const int* y_strides,
                           __global float *res_g,
-                          __const int res_dims,
                           __global int *res_strides)
 {
-  int i = 0, ix = 0, iy = 0;
-  for(int dim = 0; dim < res_dims; dim++)
-  {
-    i += get_global_id(dim) * res_strides[dim];
-    ix += get_global_id(dim) * x_strides[dim];
-    iy += get_global_id(dim) * y_strides[dim];
-  }
+  int gid = get_global_id(0);
+
+  int i = res_strides[gid];
+  int ix = x_strides[gid];
+  int iy = y_strides[gid];
 
   res_g[i] = pow(x_g[ix], y_g[iy]);
 }
@@ -56,17 +50,13 @@ __kernel void add__broadcast(__global const float *x_g,
                           __global const float *y_g, 
                           __global const int* y_strides,
                           __global float *res_g,
-                          __const int res_dims,
                           __global int *res_strides)
 {
-  int i = 0, ix = 0, iy = 0;
-  //iterate over trailing axes, the stride for non-trailing axes is set to 0 on host.
-  for(int dim = 0; dim < res_dims; dim++) // res_dims = get_work_dim()
-  {
-    i += get_global_id(dim) * res_strides[dim];
-    ix += get_global_id(dim) * x_strides[dim];
-    iy += get_global_id(dim) * y_strides[dim];
-  }
+  int gid = get_global_id(0);
+
+  int i = res_strides[gid];
+  int ix = x_strides[gid];
+  int iy = y_strides[gid];
 
   res_g[i] = x_g[ix] + y_g[iy];
 }
@@ -200,16 +190,14 @@ __kernel void broadcast_to__broadcast(__global const float *dv_g,
                           __global const float *x_g, 
                           __global const int* x_strides,
                           __global float *res_g,
-                          __const int res_dims,
                           __global int *res_strides)
 {
+  // TODO: remove this kernel and instead just change the shape and stride of the array
+  int gid = get_global_id(0);
+
   // broadcast dv
-  int i = 0, idv = 0;
-  for(int dim = 0; dim < res_dims; dim++)
-  {
-    i += get_global_id(dim) * res_strides[dim];
-    idv += get_global_id(dim) * dv_strides[dim];
-  }
+  int i = res_strides[gid];
+  int idv = dv_strides[gid];
   res_g[i] = dv_g[idv];
 }
 
@@ -250,16 +238,13 @@ void mul__broadcast(__global const float *x_g,
                           __global const float *y_g, 
                           __global const int* y_strides,
                           __global float *res_g,
-                          __const int res_dims,
                           __global int *res_strides)
 {
-  int idx = 0, ix = 0, iy = 0;
-  for (int dim = 0; dim < get_work_dim(); dim++)
-  {
-    idx += get_global_id(dim) * res_strides[dim];
-    ix += get_global_id(dim) * x_strides[dim];
-    iy += get_global_id(dim) * y_strides[dim];
-  }
+  int gid = get_global_id(0);
 
-  res_g[idx] = x_g[ix] * y_g[iy];
+  int i = res_strides[gid];
+  int ix = x_strides[gid];
+  int iy = y_strides[gid];
+
+  res_g[i] = x_g[ix] * y_g[iy];
 }
