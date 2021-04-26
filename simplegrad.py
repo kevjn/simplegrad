@@ -222,8 +222,6 @@ class Device(object):
                     # TODO: this will not work in all cases
                     out_subs = max(x_subs, y_subs, key=len)
 
-                xstrides, ystrides = (np.floor_divide(s, 4, dtype=np.int32) for s in (x.strides, y.strides))
-
                 # deduce output shape
                 res_shape = tuple([y.shape[y_subs.find(s)], x.shape[x_subs.find(s)]][s in x_subs] for s in out_subs)
 
@@ -239,22 +237,27 @@ class Device(object):
                 assert len(reduced_subscripts) == 1, "reduction over multiple axis not implemented yet"
                 reduced_subscript = reduced_subscripts.pop()
 
+                xstrides = np.arange(np.prod(x.shape), dtype=np.int32)
+                stride = [int(s in x_subs and x.strides[x_subs.index(s)]) for s in out_subs]
+                xstrides = np.lib.stride_tricks.as_strided(xstrides, res_shape, stride).copy()
+
+                ystrides = np.arange(np.prod(y.shape), dtype=np.int32)
+                stride = [int(s in y_subs and y.strides[y_subs.index(s)]) for s in out_subs]
+                ystrides = np.lib.stride_tricks.as_strided(ystrides, res_shape, stride).copy()
+
                 # reduced dimension in operands
                 reduced_axis_x = x_subs.index(reduced_subscript)
                 reduced_axis_y = y_subs.index(reduced_subscript)
 
                 # corresponding stride
-                reduced_axis_stride_x = xstrides[reduced_axis_x]
-                reduced_axis_stride_y = ystrides[reduced_axis_y]
+                reduced_axis_stride_x = x.strides[reduced_axis_x] // 4
+                reduced_axis_stride_y = y.strides[reduced_axis_y] // 4
 
                 assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
                 reduced_axis_size = x.shape[reduced_axis_x]
 
-                ystrides = np.array([s in y_subs and y.strides[y_subs.index(s)]//4 for s in out_subs], dtype=np.int32)
-                xstrides = np.array([s in x_subs and x.strides[x_subs.index(s)]//4 for s in out_subs], dtype=np.int32)
-
                 res = Device.GPU.Array.empty(res_shape)
-                res_strides = np.array(res.strides, dtype=np.int32) // 4
+                res_strides = np.arange(np.prod(res_shape), dtype=np.int32)
 
                 # convert to opencl
                 reduced_axis_size = np.int32(reduced_axis_size)
@@ -267,7 +270,7 @@ class Device(object):
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
                 # call kernel
-                kernel(res_shape, None, x.data, y.data, x_strides.data, y_strides.data, \
+                kernel([np.prod(res_shape)], None, x.data, y.data, x_strides.data, y_strides.data, \
                     reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, res_strides.data)
 
                 return res
