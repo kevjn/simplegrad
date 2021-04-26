@@ -215,13 +215,11 @@ void einsum__einsum(__global const float* x_g,
 
   float accum = 0; // identity
 
-  int idx = 0, ix = 0, iy = 0;
-  for (int dim = 0; dim < get_work_dim(); dim++)
-  {
-    idx += get_global_id(dim) * result_strides[dim];
-    ix += get_global_id(dim) * x_strides[dim];
-    iy += get_global_id(dim) * y_strides[dim];
-  }
+  int gid = get_global_id(0);
+
+  int idx = result_strides[gid];
+  int ix = x_strides[gid];
+  int iy = y_strides[gid];
 
   // sum over k
   for (int k = 0; k < reduced_axis_size; k++)
