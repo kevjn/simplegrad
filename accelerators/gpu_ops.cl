@@ -206,9 +206,9 @@ void einsum__einsum(__global const float* x_g,
             __global const float* y_g,
             __global const int* x_strides,
             __global const int* y_strides,
-            __const int reduced_axis_stride_x,
-            __const int reduced_axis_stride_y,
-            __const int reduced_axis_size,
+            __global const int* reduced_axes_stride_x,
+            __global const int* reduced_axes_stride_y,
+            __const int reduced_axes_size,
             __global float* result,
             __global const int* result_strides)
 {
@@ -222,9 +222,9 @@ void einsum__einsum(__global const float* x_g,
   int iy = y_strides[gid];
 
   // sum over k
-  for (int k = 0; k < reduced_axis_size; k++)
+  for (int k = 0; k < reduced_axes_size; k++)
   {
-    accum += x_g[k * reduced_axis_stride_x + ix] * y_g[k * reduced_axis_stride_y + iy];
+    accum += x_g[reduced_axes_stride_x[k] + ix] * y_g[reduced_axes_stride_y[k] + iy];
   }
 
   result[idx] = accum;

@@ -210,7 +210,6 @@ class Device(object):
 
             def einsum(kernel, x, y, subscripts):
                 # combines broadcasting and reduction parsing
-                assert subscripts
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
 
                 # parse ellipsis if needed
@@ -225,7 +224,7 @@ class Device(object):
                 # deduce output shape
                 res_shape = tuple([y.shape[y_subs.find(s)], x.shape[x_subs.find(s)]][s in x_subs] for s in out_subs)
 
-                reduced_subscripts = (set(x_subs) | set(y_subs)) - set(out_subs)
+                reduced_subscripts = list((set(x_subs) | set(y_subs)) - set(out_subs))
                 if not reduced_subscripts:
                     # transpose operands relative to out_subs
                     x = x.transpose(*[out_subs.index(x) for x in x_subs])
@@ -233,9 +232,6 @@ class Device(object):
 
                     # standard multiplication
                     return Tensor.device.mul(x, y)
-
-                assert len(reduced_subscripts) == 1, "reduction over multiple axis not implemented yet"
-                reduced_subscript = reduced_subscripts.pop()
 
                 xstrides = np.arange(np.prod(x.shape), dtype=np.int32)
                 stride = [int(s in x_subs and x.strides[x_subs.index(s)]) for s in out_subs]
@@ -246,15 +242,17 @@ class Device(object):
                 ystrides = np.lib.stride_tricks.as_strided(ystrides, res_shape, stride).copy()
 
                 # reduced dimension in operands
-                reduced_axis_x = x_subs.index(reduced_subscript)
-                reduced_axis_y = y_subs.index(reduced_subscript)
+                reduced_shape = tuple([y.shape[y_subs.find(s)], x.shape[x_subs.find(s)]][s in x_subs] for s in reduced_subscripts)
 
-                # corresponding stride
-                reduced_axis_stride_x = x.strides[reduced_axis_x] // 4
-                reduced_axis_stride_y = y.strides[reduced_axis_y] // 4
+                reduced_axes_stride_x = [int(s in x_subs and x.strides[x_subs.index(s)]) for s in reduced_subscripts]
+                stride = np.arange(np.prod(x.shape), dtype=np.int32)
+                reduced_axes_stride_x = np.lib.stride_tricks.as_strided(stride, reduced_shape, reduced_axes_stride_x).copy()
 
-                assert x.shape[reduced_axis_x] == y.shape[reduced_axis_y]
-                reduced_axis_size = x.shape[reduced_axis_x]
+                reduced_axes_stride_y = [int(s in y_subs and y.strides[y_subs.index(s)]) for s in reduced_subscripts]
+                stride = np.arange(np.prod(y.shape), dtype=np.int32)
+                reduced_axes_stride_y = np.lib.stride_tricks.as_strided(stride, reduced_shape, reduced_axes_stride_y).copy()
+
+                reduced_axis_size = np.prod(reduced_shape)
 
                 res = Device.GPU.Array.empty(res_shape)
                 res_strides = np.arange(np.prod(res_shape), dtype=np.int32)
@@ -264,14 +262,14 @@ class Device(object):
                 x_strides = cl.array.to_device(Device.GPU.queue, xstrides)
                 y_strides = cl.array.to_device(Device.GPU.queue, ystrides)
 
-                reduced_axis_stride_x = np.int32(reduced_axis_stride_x)
-                reduced_axis_stride_y = np.int32(reduced_axis_stride_y)
+                reduced_axis_stride_x = cl.array.to_device(Device.GPU.queue, reduced_axes_stride_x)
+                reduced_axis_stride_y = cl.array.to_device(Device.GPU.queue, reduced_axes_stride_y)
 
                 res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
 
                 # call kernel
                 kernel([np.prod(res_shape)], None, x.data, y.data, x_strides.data, y_strides.data, \
-                    reduced_axis_stride_x, reduced_axis_stride_y, reduced_axis_size, res.data, res_strides.data)
+                    reduced_axis_stride_x.data, reduced_axis_stride_y.data, reduced_axis_size, res.data, res_strides.data)
 
                 return res
 
