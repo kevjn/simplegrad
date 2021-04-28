@@ -63,26 +63,20 @@ __kernel void add__broadcast(__global const float *x_g,
 
 __kernel void max__reduce(__global const float* buffer,
             __global const int* strides,
-            __global const int* anchored_axes,
-            __const int reduced_axis,
+            __global const int* reduced_axes_stride,
             __const int reduced_axis_size,
             __global float* result,
             __global const int* result_strides)
 {
   float accum = -INFINITY; // identity
 
-  int offset = 0;
-  int idx = 0;
-  for (int dim = 0; dim < get_work_dim(); dim++)
-  {
-    offset += get_global_id(dim) * strides[anchored_axes[dim]];
-    idx += get_global_id(dim) * result_strides[dim];
-  }
+  int idx = result_strides[get_global_id(0)];
+  int offset = strides[get_global_id(0)];
 
   // sum over k
   for (int k = 0; k < reduced_axis_size; k++)
   {
-    accum = max(accum, buffer[k * strides[reduced_axis] + offset]);
+    accum = max(accum, buffer[reduced_axes_stride[k] + offset]);
   }
 
   result[idx] = accum;
@@ -90,27 +84,21 @@ __kernel void max__reduce(__global const float* buffer,
 
 __kernel void argmax__reduce(__global const float* buffer,
             __global const int* strides,
-            __global const int* anchored_axes,
-            __const int reduced_axis,
+            __global const int* reduced_axes_stride,
             __const int reduced_axis_size,
-            __global int* result,
+            __global float* result,
             __global const int* result_strides)
 {
   float _max = -INFINITY; // identity
 
-  int offset = 0;
-  int idx = 0;
-  for (int dim = 0; dim < get_work_dim(); dim++)
-  {
-    offset += get_global_id(dim) * strides[anchored_axes[dim]];
-    idx += get_global_id(dim) * result_strides[dim];
-  }
+  int idx = result_strides[get_global_id(0)];
+  int offset = strides[get_global_id(0)];
 
   // sum over k
   int max_idx = 0;
   for (int k = 0; k < reduced_axis_size; k++)
   {
-    float val = buffer[k * strides[reduced_axis] + offset];
+    float val = buffer[reduced_axes_stride[k] + offset];
     if (_max < val)
     {
       _max = val;
@@ -160,26 +148,20 @@ __kernel void log__elementwise(__global const float *a_g, __global float *res_g)
 __kernel
 void sum__reduce(__global const float* buffer,
             __global const int* strides,
-            __global const int* anchored_axes,
-            __const int reduced_axis,
+            __global const int* reduced_axes_stride,
             __const int reduced_axis_size,
             __global float* result,
             __global const int* result_strides)
 {
   float accum = 0; // identity
 
-  int offset = 0;
-  int idx = 0;
-  for (int dim = 0; dim < get_work_dim(); dim++)
-  {
-    offset += get_global_id(dim) * strides[anchored_axes[dim]];
-    idx += get_global_id(dim) * result_strides[dim];
-  }
+  int idx = result_strides[get_global_id(0)];
+  int offset = strides[get_global_id(0)];
 
   // sum over k
   for (int k = 0; k < reduced_axis_size; k++)
   {
-    accum += buffer[k * strides[reduced_axis] + offset];
+    accum += buffer[reduced_axes_stride[k] + offset];
   }
 
   result[idx] = accum;
