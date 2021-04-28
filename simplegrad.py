@@ -273,38 +273,36 @@ class Device(object):
 
                 return res
 
-            def axis(x, ax):
-                return (*range(x.ndim),) if ax is None else ax if type(ax) is tuple else ax if ax >= 0 else x.ndim + ax
+            def reduce(kernel, x, axis=None, keepdims=False):
+                axis = tuple(np.arange(x.ndim)[list([axis])].flatten())
 
-            def reduce(kernel, x, axis=None, keepdims=False, **kwargs):
-                axis = Device.GPU.Parser.axis(x, axis)
+                meta = np.stack([x.shape, x.strides]) 
+                reduced_shape, reduced_strides = meta[:,axis]
+                result_shape, xstrides = np.delete(meta, axis, axis=1)
 
-                if type(axis) is tuple:
-                    for ax in sorted(axis, reverse=True):
-                        x = Device.GPU.Parser.reduce(kernel, x, axis=ax)
-                    return x
+                strides = np.arange(np.prod(x.shape), dtype=np.int32)
+                reduced_axes_stride = np.lib.stride_tricks.as_strided(strides, reduced_shape, reduced_strides).copy()
+                xstrides = np.lib.stride_tricks.as_strided(strides, result_shape, xstrides).copy()
 
-                strides = np.array(x.strides, dtype=np.int32) // (x.nbytes // x.size)
-                strides = cl.array.to_device(Device.GPU.queue, strides)
+                if keepdims:
+                    result_shape = np.insert(result_shape, axis, 1)
+                if not result_shape.size:
+                    result_shape = (1,)
+                result = Device.GPU.Array.empty(tuple(result_shape))
+                result_strides = np.arange(np.prod(result_shape), dtype=np.int32)
 
-                anchored_axes = np.delete(range(x.ndim), axis).astype(np.int32)
-                if not anchored_axes.size:
-                    anchored_axes = np.array([axis], dtype=np.int32)
-                    global_work_size = np.array([1], dtype=np.int32)
-                else:
-                    global_work_size = np.array(x.shape, dtype=np.int32)[anchored_axes]
+                # convert to opencl
+                reduced_axes_stride = cl.array.to_device(Device.GPU.queue, reduced_axes_stride)
+                xstrides = cl.array.to_device(Device.GPU.queue, xstrides)
+                reduced_axis_size = np.int32(np.prod(reduced_shape))
+                result_strides = cl.array.to_device(Device.GPU.queue, result_strides)
 
-                anchored_axes = cl.array.to_device(Device.GPU.queue, anchored_axes)
+                args = x.data, xstrides.data, reduced_axes_stride.data, reduced_axis_size, \
+                        result.data, result_strides.data
 
-                res = Device.GPU.Array.empty((*global_work_size, *[1] * keepdims * (x.ndim - global_work_size.size)))
-                res_strides = np.array(res.strides, dtype=np.int32) // (res.nbytes // res.size)
-                res_strides = cl.array.to_device(Device.GPU.queue, res_strides)
-                
-                args = x.data, strides.data, anchored_axes.data, \
-                       np.int32(axis), np.int32(x.shape[axis]), res.data, res_strides.data
+                kernel([np.prod(result_shape)], None, *args)
 
-                kernel(global_work_size, None, *args)
-                return res
+                return result
 
 # pretty print arrays
 # np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
