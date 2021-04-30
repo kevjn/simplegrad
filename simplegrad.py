@@ -451,16 +451,13 @@ class Tensor(object):
 
     def as_strided_backward(dv, x, out, **kwargs):
         assert dv.shape == out.shape
-        accum = np.zeros(x.shape)
-        kdims = out.ndim - x.ndim
-        kernel_size = out.shape[-kdims:]
+        indices = Tensor.device.arange(np.prod(x.shape), dtype=np.int32)
+        indices = Tensor.device.as_strided(indices, **kwargs)
 
-        slices = (slice(None),) * 2 # the first two dims are fixed
-        for idx in np.ndindex(out.shape[2:2+kdims]):
-            ws_slices = tuple(slice(i, i+sz) for i,sz in zip(idx, kernel_size))
-            accum[slices + ws_slices] += dv[slices + idx]
+        # flatten operands
+        indices, dv = Tensor.device.reshape(indices, -1), Tensor.device.reshape(dv, -1)
 
-        return accum
+        return Tensor.device.reshape(Tensor.device.bincount(indices, dv), x.shape)
 
     # ========== composite ops ==========
 
