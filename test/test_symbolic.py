@@ -25,6 +25,26 @@ def test_logsoftmax():
 
     assert np.allclose(out.data, eval(out.data.symbolic))
 
+def test_maxpool2d():
+    image  = np.random.ranf([2, 2, 4, 4]).astype(np.float32)
+
+    out = Tensor(image, 'image').maxpool2d().sum()
+    out.backward()
+
+    assert (out.data == eval(out.data.symbolic)).all()
+    assert (out.grad == eval(out.grad.symbolic)).all()
+
+def test_conv2d():
+    image  = np.random.ranf([10, 16, 20, 40]).astype(np.float32) # N, in_channels, Hin, Win
+    filter = np.random.ranf([20, 16, 3, 3]).astype(np.float32) # out_channels, in_channels, kernel_size[0], kernel_size[1]
+
+    w = Tensor(filter, 'filter')
+    out = Tensor(image, 'image').conv2d(w).sum()
+    out.backward()
+
+    assert (out.data == eval(out.data.symbolic)).all()
+    assert (out.grad == eval(out.grad.symbolic)).all()
+
 def test_simple_classifier():
     a = np.random.randn(30, 2).astype(np.float32)
     w0 = np.random.randn(2, 32).astype(np.float32)
