@@ -4,22 +4,21 @@ from transformers import BertTokenizer
 from simplegrad import Tensor
 import numpy as np
 
-@pytest.mark.parametrize('text', 
-                        ['The quick brown fox jumps over the lazy dog',
-                         'Test'])
-def test_wordpiece_embedding_layer(text):
+@pytest.mark.parametrize('text1', ['The quick brown fox jumps over the lazy dog', 'Test'])
+@pytest.mark.parametrize('text2', ['Hello world', 'Hello world again'])
+def test_wordpiece_embedding_layer(text1, text2):
 
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
     model = torch.hub.load('huggingface/pytorch-transformers', 'model', 'bert-base-uncased')
 
     # BERT has a maximum input length of 512.
-    x = tokenizer.encode(text, return_tensors='pt')
+    inputs = tokenizer.encode_plus(text1, text2, return_tensors='pt')
 
-    # ========== pytorch ==========
-    out_pt = model.embeddings(x).data.numpy()
+    # ==== pytorch ====
+    out_pt = model.embeddings(inputs['input_ids'], inputs['token_type_ids']).data.numpy()
 
     params = model.embeddings.parameters()
-    # ========= simplegrad =========
+    # ==== simplegrad =====
     word_embeddings_weight = next(params).detach().numpy()
     position_embeddings_weight = next(params).detach().numpy()
     token_type_embeddings_weight = next(params).detach().numpy()
@@ -29,16 +28,11 @@ def test_wordpiece_embedding_layer(text):
     assert next(params, None) is None # make sure generator is exhausted
 
     # embedding forward
-    indices = x
-    segment_label = 0 # only use 1 segment for now
+    x = word_embeddings_weight[inputs['input_ids']]
 
-    x = word_embeddings_weight[indices]
+    y = position_embeddings_weight[:inputs['input_ids'].size(1)]
 
-    idx = np.broadcast_to(np.arange(indices.shape[1]), indices.shape)
-    y = position_embeddings_weight[idx]
-
-    idx = np.broadcast_to(segment_label, indices.shape)
-    z = token_type_embeddings_weight[idx]
+    z = token_type_embeddings_weight[inputs['token_type_ids']]
 
     out = x + y + z
 
