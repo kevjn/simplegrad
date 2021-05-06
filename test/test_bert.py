@@ -85,6 +85,15 @@ class BERT:
         # 2 parameters in pooler (output) layer
         assert len(self.pooler_params) == 2
 
+    def params(self):
+        def flatten(items):
+            for x in items:
+                if isinstance(x, Iterable) and not isinstance(x, (str, bytes)):
+                    yield from flatten(x)
+                else:
+                    yield x
+        return (x for x in flatten(self.__dict__.values()) if isinstance(x, Tensor))
+
     def forward(self, input_ids: np.ndarray, token_type_ids: np.ndarray, attention_mask=None):
         # embedding block
         token, position, segment, weight, bias = self.embedding_params
@@ -99,7 +108,7 @@ class BERT:
             v = x.fork().einsum("ijk,lmk->jlim", layer[4]).add(layer[5])
             q = x.einsum("ijk,lmk->jlim", layer[0]).add(layer[1])
 
-            attn_logits = q.einsum("ijkl,mjkl->kjim", k).div(Tensor(64).pow(Tensor(0.5)))
+            attn_logits = q.einsum("ijkl,mjkl->kjim", k).div(Tensor(np.sqrt(64)))
             attn = attn_logits.softmax()
 
             values = attn.einsum("ijkl,ljim->ijkm", v)
@@ -153,4 +162,15 @@ def test_bert_base():
     inputs = tokenizer.encode_plus("Hello", "World", return_tensors='np')
     out_sg = model.forward(**inputs)
 
-    np.allclose(out_sg.data.view(np.ndarray), out_pt.data.numpy(), atol=0.01)
+    assert np.allclose(out_sg.data.view(np.ndarray), out_pt.data.numpy(), atol=0.01)
+
+    # ==== compare gradients ====
+    out_sg.sum().backward()
+    out_pt.sum().backward()
+
+    for p1, p2 in [*zip(model.params(), torch_model.parameters())][:16]:
+        g1 = p1.grad.view(np.ndarray)
+        g2 = p2.grad.numpy()
+
+        g1 = g1.reshape(g2.shape)
+        assert np.allclose(g1, g2, atol=0.015, rtol=0.001)
