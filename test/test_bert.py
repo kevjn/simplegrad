@@ -121,17 +121,21 @@ class BERT:
 
 def GELU(x):
     lhs = Tensor(np.sqrt(2.0 / np.pi))
-    rhs = x.fork().pow(Tensor(3)).mul(Tensor(0.044715)).add(x)
+    rhs = x.fork().pow(Tensor(3)).mul(Tensor(0.044715)).add(x.fork())
     inner = lhs.mul(rhs).tanh()
     return x.mul(Tensor(0.5)).mul(inner.add(Tensor(1.0)))
 
 def test_GELU():
     x = np.random.randn(1, 5, 3072)
 
-    out_sg = GELU(Tensor(x)).data.view(np.ndarray)
-    out_pt = torch.nn.functional.gelu(torch.tensor(x)).data.numpy()
-    
-    assert np.allclose(out_sg, out_pt, atol=1e-3)
+    out_sg = GELU(x_sg := Tensor(x))
+    out_pt = torch.nn.functional.gelu(x_pt := torch.tensor(x, requires_grad=True))
+    assert np.allclose(out_sg.data.view(np.ndarray), out_pt.data.numpy(), atol=1e-3)
+
+    out_sg.sum().backward()
+    out_pt.sum().backward()
+
+    assert np.allclose(x_sg.grad.view(np.ndarray), x_pt.grad.numpy(), atol=1e-3)
 
 def test_bert_base():
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
