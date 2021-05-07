@@ -529,10 +529,13 @@ class Tensor(object):
         return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))
 
     def tanh(self):
-        e2, e3, e4 = self.fork().mul(Tensor(-1)).exp(), self.fork().exp(), \
-                     self.fork().mul(Tensor(-1)).exp()
+        max_exp = np.log(np.finfo(np.float32).max) # 88.72284
+        self.data = self.data.clip(-max_exp, max_exp)
 
-        return self.exp().sub(e2).div(e3.add(e4))
+        e1, e2, e3, e4 = self,              self.fork().mul(Tensor(-1)).exp(), \
+                         self.fork().exp(), self.fork().mul(Tensor(-1)).exp()
+
+        return e1.exp().sub(e2).div(e3.add(e4))
 
     # ========== control flow ops ==========
 
