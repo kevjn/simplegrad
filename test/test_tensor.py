@@ -50,6 +50,36 @@ def test_multiple_tanh():
     assert np.allclose(c.detach().numpy(), e.data)
     assert np.allclose(b.grad, d.grad)
 
+def test_tanh_positive_overflow():
+    a = np.array([10, 20, 80, 90, 200, 200, 600, 800], dtype=float)
+    b = torch.tensor(a, requires_grad=True)
+    c = b.tanh()
+
+    d = Tensor(a, 'a')
+    e = d.tanh()
+
+    assert np.allclose(c.data.numpy(), e.data.view(np.ndarray))
+
+    c.sum().backward()
+    e.sum().backward()
+
+    assert np.allclose(b.grad.numpy(), d.grad.view(np.ndarray))
+
+def test_tanh_negative_overflow():
+    a = np.array([-10, -20, -80, -90, -200, -200, -600, -800], dtype=float)
+    b = torch.tensor(a, requires_grad=True)
+    c = b.tanh()
+
+    d = Tensor(a, 'a')
+    e = d.tanh()
+
+    assert np.allclose(c.data.numpy(), e.data.view(np.ndarray))
+
+    c.sum().backward()
+    e.sum().backward()
+
+    assert np.allclose(b.grad.numpy(), d.grad.view(np.ndarray))
+
 def test_softmax_and_mean():
     from scipy.special import softmax
 
