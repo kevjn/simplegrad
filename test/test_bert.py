@@ -126,7 +126,10 @@ class BERT:
             x = x.einsum("ijk,lk->ijl", param[12]).add(param[13])
             x = x.add(residual).layer_norm(-1, param[14], param[15], 1e-12)
 
-        return x
+        # pooler (output) block
+        # take the hidden state corresponding to the first token
+        x = x[:,0].einsum("ij,kj->ik", self.pooler_params[0]).add(self.pooler_params[1])
+        return x.tanh()
 
 def GELU(x):
     lhs = Tensor(np.sqrt(2.0 / np.pi))
@@ -155,8 +158,7 @@ def test_bert_base():
 
     # ==== pytorch ====
     inputs = tokenizer.encode_plus("Hello", "World", return_tensors='pt', return_attention_mask=False)
-    out_embedding = torch_model.embeddings(**inputs)
-    out_pt = torch_model.encoder(out_embedding).last_hidden_state
+    out_pt = torch_model(**inputs).pooler_output
 
     # ==== simplegrad ====
     inputs = tokenizer.encode_plus("Hello", "World", return_tensors='np')
@@ -170,7 +172,7 @@ def test_bert_base():
     out_sg.sum().backward()
     out_pt.sum().backward()
 
-    for p1, p2 in [*zip(model.params(), torch_model.parameters())][:16*12]:
+    for p1, p2 in zip(model.params(), torch_model.parameters()):
         g1 = p1.grad.view(np.ndarray)
         g2 = p2.grad.numpy()
 
