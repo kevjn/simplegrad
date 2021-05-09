@@ -10,7 +10,7 @@ class Device(object):
     class CPU:
         class Array(np.ndarray):
             def __new__(cls, arr, symbolic=None):
-                arr = np.array(arr) # TODO: use np.asarray instead
+                arr = np.asarray(arr)
                 obj = arr.view(cls)
                 obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf))
                 return obj
@@ -21,17 +21,13 @@ class Device(object):
                 self.symbolic = getattr(obj, 'symbolic', None)
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-                args = tuple(self._symbolic_args(inputs, kwargs))
-                symbolic = f"np.{ufunc.__name__}({', '.join(args)})"
-
-                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
-                out = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs), symbolic)
-                return out
+                assert method == '__call__'
+                return self.__array_function__(ufunc, None, inputs, kwargs)
 
             def __array_function__(self, func, types, inputs, kwargs):
-                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
                 symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
 
+                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
                 out = Device.CPU.Array(func(*items, **kwargs), symbolic)
                 return out
 
@@ -49,11 +45,15 @@ class Device(object):
         def relu(self, x): return np.maximum(x, 0)
 
         def as_strided(self, x, **kwargs):
+            kwargs['strides'] = np.multiply(kwargs['strides'], x.dtype.itemsize).tolist()
             result = np.lib.stride_tricks.as_strided(x, **kwargs, subok=True)
             result.symbolic = f"np.lib.stride_tricks.as_strided({', '.join(result._symbolic_args((x,), kwargs))})"
             return result
 
-        def to_device(self, x, name=None): return Device.CPU.Array(np.atleast_1d(x), name)
+        def to_device(self, x): 
+            if not isinstance(x, self.Array):
+                return self.Array(np.atleast_1d(x)) # TODO: remove atleast_1d
+            return x
 
         def to_cpu(self, x): return x.view(np.ndarray)
 
@@ -65,7 +65,8 @@ class Device(object):
 
         @classmethod
         def arange(cls, n):
-            return cls.Array(np.arange(n, dtype=np.int32), symbolic=f'np.arange({n}, dtype=np.int32)')
+            symb = n > 12 and f'np.arange({n})'
+            return cls.Array(np.arange(n), symb)
 
     class GPU:
         class Array:
@@ -313,8 +314,8 @@ class Device(object):
 class Tensor(object):
     device = Device.CPU()
 
-    def __init__(self, data, name=None):
-        self.data = Tensor.device.to_device(data, name)
+    def __init__(self, data):
+        self.data = Tensor.device.to_device(data)
         self.grad = 0
 
         self.backward_fxns = [] 
@@ -481,10 +482,11 @@ class Tensor(object):
     def window_view(self, kernel_size=(2,2), stride=1):
         N, cin, *in_shape, kdims = *self.shape, len(kernel_size)
 
+        strides = np.floor_divide(self.data.strides, self.data.dtype.itemsize) # normalized strides
         # get window shape and strides
         truncated_out_shape = *((xin - kin) // 1 + 1 for xin, kin in zip(in_shape, kernel_size)),
         out_shape = N, cin, *truncated_out_shape, *kernel_size
-        out_strides = *self.data.strides[:2], *(xs*stride for xs in self.data.strides[-kdims:]), *self.data.strides[-kdims:]
+        out_strides = *strides[:2], *(xs*stride for xs in strides[-kdims:]), *strides[-kdims:]
 
         # return window view
         return self.as_strided(shape=out_shape, strides=out_strides)
@@ -552,7 +554,7 @@ class Tensor(object):
             dv_fork = dv
             return dv
 
-        fork = Tensor(self.data, name=self.data.symbolic)
+        fork = Tensor(self.data)
         fork.backward_fxns.append(fork_backward)
         fork.arguments.append((dict(),)) # empty args
 
