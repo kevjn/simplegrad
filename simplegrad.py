@@ -10,7 +10,7 @@ class Device(object):
     class CPU:
         class Array(np.ndarray):
             def __new__(cls, arr, symbolic=None):
-                arr = np.array(arr, dtype=np.float32)
+                arr = np.array(arr) # TODO: use np.asarray instead
                 obj = arr.view(cls)
                 obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf))
                 return obj
@@ -20,24 +20,23 @@ class Device(object):
                 # This attribute should be maintained!
                 self.symbolic = getattr(obj, 'symbolic', None)
 
-            def __array_ufunc__(self, ufunc, method, *inputs, dtype=None, **kwargs):
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 args = tuple(self._symbolic_args(inputs, kwargs))
-                args += ("dtype=np.float32",) # require float32
                 symbolic = f"np.{ufunc.__name__}({', '.join(args)})"
 
                 items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
-                output = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs, dtype=dtype), symbolic)
-                return output
+                out = Device.CPU.Array(getattr(ufunc, method)(*items, **kwargs), symbolic)
+                return out
 
             def __array_function__(self, func, types, inputs, kwargs):
                 items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
                 symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
-                out = Device.CPU.Array(func(*items, **kwargs), symbolic)
 
+                out = Device.CPU.Array(func(*items, **kwargs), symbolic)
                 return out
 
             def _symbolic_args(self, inputs, kwargs): 
-                return it.chain(
+                return it.chain (
                     (x.symbolic if isinstance(x, type(self)) else repr(x) for x in inputs),
                     (f'{x}={repr(y)}' for x,y in kwargs.items()),
                 )
@@ -49,12 +48,16 @@ class Device(object):
 
         def relu(self, x): return np.maximum(x, 0)
 
-        def as_strided(self, *args, **kwargs):
-            return np.lib.stride_tricks.as_strided(*args, **kwargs)
+        def as_strided(self, x, **kwargs):
+            result = np.lib.stride_tricks.as_strided(x, **kwargs, subok=True)
+            result.symbolic = f"np.lib.stride_tricks.as_strided({', '.join(result._symbolic_args((x,), kwargs))})"
+            return result
 
         def to_device(self, x, name=None): return Device.CPU.Array(np.atleast_1d(x), name)
 
         def to_cpu(self, x): return x.view(np.ndarray)
+
+        def broadcast_to(self, x, y): return np.broadcast_to(x, y.shape)
 
         # naming conventions
         pow = np.power
@@ -62,7 +65,7 @@ class Device(object):
 
         @classmethod
         def arange(cls, n):
-            return cls.Array(np.arange(n))
+            return cls.Array(np.arange(n, dtype=np.int32), symbolic=f'np.arange({n}, dtype=np.int32)')
 
     class GPU:
         class Array:
@@ -353,8 +356,9 @@ class Tensor(object):
         assert not type(self.grad) is tuple
 
     def backward(self):
+        assert self.data.size == 1
         # implicit gradient creation
-        self._backward(Tensor.device.to_device(np.ones(self.shape, dtype=np.float32)))
+        self._backward(Tensor.device.to_device(1.0))
 
     def __getattr__(self, attr):
         forward = getattr(Tensor.device, attr)
@@ -464,7 +468,7 @@ class Tensor(object):
 
     def as_strided_backward(dv, x, out, **kwargs):
         assert dv.shape == out.shape
-        indices = Tensor.device.arange(np.prod(x.shape), dtype=np.int32)
+        indices = Tensor.device.arange(np.prod(x.shape))
         indices = Tensor.device.as_strided(indices, **kwargs)
 
         # flatten operands
