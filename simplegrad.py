@@ -12,7 +12,7 @@ class Device(object):
             def __new__(cls, arr, symbolic=None):
                 arr = np.asarray(arr)
                 obj = arr.view(cls)
-                obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf))
+                obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf, floatmode='unique'))
                 return obj
 
             def __array_finalize__(self, obj) -> None:
@@ -47,13 +47,9 @@ class Device(object):
         def as_strided(self, x, **kwargs):
             kwargs['strides'] = np.multiply(kwargs['strides'], x.dtype.itemsize).tolist()
             result = np.lib.stride_tricks.as_strided(x, **kwargs, subok=True)
-            result.symbolic = f"np.lib.stride_tricks.as_strided({', '.join(result._symbolic_args((x,), kwargs))})"
+            if hasattr(result, 'symbolic'):
+                result.symbolic = f"np.lib.stride_tricks.as_strided({', '.join(result._symbolic_args((x,), kwargs))})"
             return result
-
-        def to_device(self, x): 
-            if not isinstance(x, self.Array):
-                return self.Array(np.atleast_1d(x)) # TODO: remove atleast_1d
-            return x
 
         def to_cpu(self, x): return x.view(np.ndarray)
 
@@ -63,10 +59,8 @@ class Device(object):
         pow = np.power
         mul = np.multiply
 
-        @classmethod
-        def arange(cls, n):
-            symb = n > 12 and f'np.arange({n})'
-            return cls.Array(np.arange(n), symb)
+        def arange(self, n):
+            return np.arange(n, like=self.Array([]))
 
     class GPU:
         class Array:
@@ -315,7 +309,8 @@ class Tensor(object):
     device = Device.CPU()
 
     def __init__(self, data):
-        self.data = Tensor.device.to_device(data)
+        assert isinstance(data, type(Tensor.device.Array([])))
+        self.data = data
         self.grad = 0
 
         self.backward_fxns = [] 
@@ -359,14 +354,16 @@ class Tensor(object):
     def backward(self):
         assert self.data.size == 1
         # implicit gradient creation
-        self._backward(Tensor.device.to_device(1.0))
+        self._backward(Tensor.device.Array(1.0))
 
     def __getattr__(self, attr):
         forward = getattr(Tensor.device, attr)
         backward = getattr(Tensor, f"{attr}_backward")
 
         def wrapper(*operands, **kwargs):
-            args = tuple(x.data for x in (self, *operands))
+            args = self.data, *(x.data if isinstance(x, Tensor) 
+                 else Tensor.device.Array(x) for x in operands)
+
             self.data = forward(*args, **kwargs)
 
             # save intermediate variables and (output) for backward pass
@@ -378,9 +375,11 @@ class Tensor(object):
 
     def unbroadcast(backward):
         def reduce(grad, shape):
+            if np.isscalar(grad):
+                return grad # temp fix
             _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
             idx = np.not_equal(grad.shape, _shape)
-            axes = *np.arange(grad.ndim)[idx],
+            axes = tuple(np.arange(grad.ndim)[idx])
             if not axes:
                 return grad
             return Tensor.device.reshape(Tensor.device.sum(grad, axis=axes), shape)
@@ -393,20 +392,21 @@ class Tensor(object):
         @functools.wraps(backward)
         def wrapper(dv, operand, x, y, out, **kwargs):
             dy, dx = backward(dv, x, y, out, shapes=(y.shape, x.shape), **kwargs)
-            operand._backward(dy)
+            if isinstance(operand, Tensor):
+                operand._backward(dy)
             return dx
         return wrapper
 
     # ========== unary ops ==========
 
     def relu_backward(dv, x, out): 
-        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, Tensor.device.to_device(0)))
+        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, Tensor.device.Array(0)))
 
     def exp_backward(dv, x, out):
         return Tensor.device.mul(dv, out)
 
     def log_backward(dv, x, out):
-        return Tensor.device.mul(dv, Tensor.device.pow(x, Tensor.device.to_device(-1)))
+        return Tensor.device.mul(dv, Tensor.device.pow(x, Tensor.device.Array(-1)))
     
     # ========== reduce ops ==========
 
@@ -496,10 +496,10 @@ class Tensor(object):
 
     def div(self, x):
         assert isinstance(x, type(self))
-        return self.mul(x.pow(Tensor(-1)))
+        return self.mul(x.pow(-1.0))
 
     def sub(self, x):
-        return self.add(x.mul(Tensor(-1)))
+        return self.add(x.mul(-1.0))
 
     def softmax(self):
         _max = self.fork().max(axis=-1, keepdims=True)
@@ -514,14 +514,14 @@ class Tensor(object):
         return self.sub(_max)
 
     def mean(self, axis=-1):
-        a = Tensor(np.prod(np.take(self.shape, axis)))
-        return self.sum(axis=axis, keepdims=True).div(a)
+        div = Tensor.device.Array(1/np.prod(np.take(self.shape, axis)))
+        return self.sum(axis=axis, keepdims=True).mul(div)
 
     def layer_norm(self, axes, weight, bias, eps=1e-5):
         mean = self.fork().mean(axis=axes)
         self.sub(mean)
-        sd = self.fork().pow(Tensor(2)).mean(axis=axes)
-        denom = sd.add(Tensor(eps)).pow(Tensor(0.5))
+        sd = self.fork().pow(2).mean(axis=axes)
+        denom = sd.add(eps).pow(0.5)
         return self.div(denom).mul(weight).add(bias)
 
     def conv2d(self, w, padding=0, stride=1):
@@ -532,14 +532,14 @@ class Tensor(object):
         return self.window_view(kernel_size=kernel_size, stride=stride).max(axis=(-1, -2))
 
     def sigmoid(self):
-        return self.exp().pow(Tensor(-1)).add(Tensor(1)).pow(Tensor(-1))
+        return self.exp().pow(-1).add(1).pow(-1)
 
     def tanh(self):
         max_exp = np.log(np.finfo(np.float32).max) # 88.72284
         self.data = self.data.clip(-max_exp, max_exp)
 
-        e1, e2, e3, e4 = self,              self.fork().mul(Tensor(-1)).exp(), \
-                         self.fork().exp(), self.fork().mul(Tensor(-1)).exp()
+        e1, e2, e3, e4 = self,              self.fork().mul(-1).exp(), \
+                         self.fork().exp(), self.fork().mul(-1).exp()
 
         return e1.exp().sub(e2).div(e3.add(e4))
 
@@ -572,11 +572,11 @@ class Optimizer:
     # TODO: fix decay
     def __init__(self, params, *args, decay=0.):
         self.params = params
-        self.args = tuple(map(Tensor.device.to_device, args))
-        self.t = Tensor.device.to_device(0)
+        self.args = args
+        self.t = 0
 
     def step(self):
-        self.t = Tensor.device.add(self.t, Tensor.device.to_device(1))
+        self.t = Tensor.device.add(self.t, Tensor.device.Array(1))
         self._step(self.t, *self.args)
 
     @abstractmethod
@@ -594,8 +594,8 @@ class Adam(Optimizer):
 
         super().__init__(params, *(learning_rate, epsilon, beta1, beta2), **kwargs)
 
-        self.m = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
-        self.v = [Tensor.device.to_device(np.zeros(p.shape)) for p in params]
+        self.m = [Tensor.device.Array(np.zeros(p.shape)) for p in params]
+        self.v = [Tensor.device.Array(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
         # bias correction
