@@ -9,8 +9,8 @@ import pyopencl.array
 class Device(object):
     class CPU:
         class Array(np.ndarray):
-            def __new__(cls, arr, symbolic=None):
-                arr = np.asarray(arr)
+            def __new__(cls, arr, symbolic=None, **kwargs):
+                arr = np.array(arr, **kwargs)
                 obj = arr.view(cls)
                 obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf, floatmode='unique'))
                 return obj
@@ -352,9 +352,9 @@ class Tensor(object):
         assert not type(self.grad) is tuple
 
     def backward(self):
-        assert self.data.size == 1
+        assert self.data.size == 1, 'output must be scalar for implicit grad creation'
         # implicit gradient creation
-        self._backward(Tensor.device.Array(1.0))
+        self._backward(Tensor.device.Array(1.0, ndmin=self.data.ndim))
 
     def __getattr__(self, attr):
         forward = getattr(Tensor.device, attr)
@@ -374,24 +374,21 @@ class Tensor(object):
         return wrapper
 
     def unbroadcast(backward):
-        def reduce(grad, shape):
-            if np.isscalar(grad):
-                return grad # temp fix
-            _shape = (-1,) * abs(len(shape)-len(grad.shape)) + shape
-            idx = np.not_equal(grad.shape, _shape)
-            axes = tuple(np.arange(grad.ndim)[idx])
-            if not axes:
-                return grad
-            return Tensor.device.reshape(Tensor.device.sum(grad, axis=axes), shape)
+        # summation is the dual of broadcasting
+        def reduce(grad, inp):
+            mask = np.insert(inp.shape, 0, [-1]*abs(grad.ndim - inp.ndim)) != grad.shape
+            if axis := tuple( np.r_[:grad.ndim][mask] ):
+                return Tensor.device.reshape(Tensor.device.sum(grad, axis=axis), inp.shape)
+            return grad
         @functools.wraps(backward)
-        def wrapper(*args, shapes, **kwargs):
-            return tuple(reduce(*args) for args in zip(backward(*args, **kwargs), shapes))
+        def wrapper(dv, x, y, out, **kwargs):
+            return tuple(reduce(*args) for args in zip(backward(dv, x, y, out, **kwargs), (y, x)))
         return wrapper
 
     def propagate(backward):
         @functools.wraps(backward)
         def wrapper(dv, operand, x, y, out, **kwargs):
-            dy, dx = backward(dv, x, y, out, shapes=(y.shape, x.shape), **kwargs)
+            dy, dx = backward(dv, x, y, out, **kwargs)
             if isinstance(operand, Tensor):
                 operand._backward(dy)
             return dx
