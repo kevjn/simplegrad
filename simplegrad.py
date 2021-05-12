@@ -329,18 +329,18 @@ class Tensor(object):
     def __getitem__(self, idx):
         def backward(dv, shape, idx):
             size = np.prod(shape)
-            indices = Tensor.device.arange(size, dtype=np.int32)
+            indices = Tensor.device.arange(size)
             indices = Tensor.device.reshape(indices, shape)[idx]
 
             # flatten operands
             indices, dv = Tensor.device.reshape(indices, -1), Tensor.device.reshape(dv, -1)
+            grad = Tensor.device.reshape(Tensor.device.bincount(indices, dv, minlength=size), shape)
+            self._backward(grad)
 
-            return Tensor.device.reshape(Tensor.device.bincount(indices, dv, minlength=size), shape)
-
-        self.arguments.append((self.shape, idx, dict()))
-        self.backward_fxns.append(backward)
-        self.data = self.data[idx]
-        return self
+        out = Tensor(self.data[idx])
+        out.arguments.append((self.shape, idx, dict()))
+        out.backward_fxns.append(backward)
+        return out
 
     def _backward(self, dv):
         self.grad = dv
