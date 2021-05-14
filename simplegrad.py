@@ -305,6 +305,14 @@ class Device(object):
 # pretty print arrays
 # np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 
+def override_numeric_special_methods(cls):
+    for method_name in dir(float):
+        name = method_name.strip('_')
+        if hasattr(cls, f"{name}_backward"):
+            setattr(cls, method_name, lambda x,y,name=name: getattr(x, name)(y))
+    return cls
+
+@override_numeric_special_methods
 class Tensor(object):
     device = Device.CPU()
 
