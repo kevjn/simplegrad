@@ -10,7 +10,7 @@ class Device(object):
     class CPU:
         class Array(np.ndarray):
             def __new__(cls, arr, symbolic=None, **kwargs):
-                arr = np.array(arr, **kwargs)
+                arr = np.array(arr, copy=False, **kwargs)
                 obj = arr.view(cls)
                 obj.symbolic = str(symbolic or np.array2string(arr, separator=',', threshold=np.inf, floatmode='unique'))
                 return obj
@@ -305,15 +305,7 @@ class Device(object):
 # pretty print arrays
 # np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 
-def override_numeric_special_methods(cls):
-    for method_name in dir(float):
-        name = method_name.strip('_')
-        if hasattr(cls, f"{name}_backward"):
-            setattr(cls, method_name, lambda x,y,name=name: getattr(x, name)(y))
-    return cls
-
-@override_numeric_special_methods
-class Tensor(object):
+class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     device = Device.CPU()
 
     def __init__(self, data):
@@ -364,21 +356,30 @@ class Tensor(object):
         # implicit gradient creation
         self._backward(Tensor.device.Array(1.0, ndmin=self.data.ndim))
 
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        assert method == '__call__'
+        return self.__array_function__(ufunc, None, inputs, kwargs)
+
+    def __array_function__(self, func, types, inputs, kwargs):
+        forward = getattr(Tensor.device, func.__name__)
+        backward = getattr(Tensor, f"{func.__name__}_backward")
+
+        args = tuple(x.data if isinstance(x, Tensor)
+                else Tensor.device.Array(x) for x in inputs)
+
+        self.data = forward(*args, **kwargs)
+
+        # save intermediate variables and (output) for backward pass
+        self.arguments.append((*inputs[1:], *args, self.data, kwargs))
+        self.backward_fxns.append(backward)
+
+        return self
+
     def __getattr__(self, attr):
-        forward = getattr(Tensor.device, attr)
-        backward = getattr(Tensor, f"{attr}_backward")
-
+        func = getattr(Tensor.device, attr)
+        @functools.wraps(func)
         def wrapper(*operands, **kwargs):
-            args = self.data, *(x.data if isinstance(x, Tensor) 
-                 else Tensor.device.Array(x) for x in operands)
-
-            self.data = forward(*args, **kwargs)
-
-            # save intermediate variables and (output) for backward pass
-            self.arguments.append((*operands, *args, self.data, kwargs))
-            self.backward_fxns.append(backward)
-
-            return self
+            return self.__array_function__(func, None, (self, *operands), kwargs)
         return wrapper
 
     def unbroadcast(backward):
@@ -420,7 +421,7 @@ class Tensor(object):
             dv = Tensor.device.reshape(dv, (*dv.shape, 1))
         return Tensor.device.broadcast_to(dv, x)
     
-    def max_backward(dv, x, out, axis=None, keepdims=False):
+    def amax_backward(dv, x, out, axis=None, keepdims=False):
         if keepdims:
             dv = dv.squeeze() # remove empty dims
         r = Tensor.device.reshape(x, (*dv.shape, -1)) # flatten reduced axes
@@ -438,6 +439,7 @@ class Tensor(object):
 
     def pow_backward(dv, operand, x, y, out):
         return Tensor.device.mul(dv, Tensor.device.mul(y, Tensor.device.pow(x, y-1.0)))
+    power_backward = pow_backward
 
     @propagate
     @unbroadcast
@@ -448,6 +450,7 @@ class Tensor(object):
     @unbroadcast
     def mul_backward(dv, x, y, out):
         return Tensor.device.mul(dv, x), Tensor.device.mul(dv, y)
+    multiply_backward = mul_backward
 
     # ========== processing ops ==========
     
