@@ -317,7 +317,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         self.arguments = []
 
     def __repr__(self):
-        return f"Tensor({self.data!s})"
+        return f"Tensor({np.array2string(self.data, 88, 4, True, ', ', 'Tensor(', suffix=')')})"
 
     def cpu(self):
         return Tensor.device.to_cpu(self.data)
