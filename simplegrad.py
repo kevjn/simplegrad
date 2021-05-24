@@ -6,8 +6,13 @@ from abc import abstractmethod
 import pyopencl as cl
 import pyopencl.array
 
+class NumpyMeta(type):
+    def __getattr__(cls, attr):
+        return getattr(np, attr)
+
 class Device(object):
-    class CPU:
+    class CPU(metaclass=NumpyMeta):
+
         class Array(np.ndarray):
             def __new__(cls, arr, symbolic=None, **kwargs):
                 arr = np.array(arr, copy=False, **kwargs)
@@ -22,10 +27,13 @@ class Device(object):
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 assert method == '__call__'
-                return self.__array_function__(ufunc, None, inputs, kwargs)
+                return np.core.overrides.array_function_dispatch \
+                    (Device.CPU.default_dispatcher, verify=False, module='numpy') (ufunc) \
+                    (*inputs, **kwargs)
 
             def __array_function__(self, func, types, inputs, kwargs):
-                symbolic = f"np.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
+                assert func.__module__
+                symbolic = f"{func.__module__}.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
 
                 items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
                 out = Device.CPU.Array(func(*items, **kwargs), symbolic)
@@ -37,30 +45,22 @@ class Device(object):
                     (f'{x}={repr(y)}' for x,y in kwargs.items()),
                 )
 
-        def __getattr__(self, attr): return getattr(np, attr)
+        def default_dispatcher(*args, **kwargs): 
+           return args
 
-        def einsum(self, *operands, subscripts):
-            return np.einsum(subscripts, *operands)
+        def as_strided(x, **kwargs):
+            return np.core.overrides.array_function_dispatch \
+                  (Device.CPU.default_dispatcher, verify=False) \
+                  (np.lib.stride_tricks.as_strided) (x, **kwargs)
 
-        def relu(self, x): return np.maximum(x, 0)
-
-        def as_strided(self, x, **kwargs):
-            kwargs['strides'] = np.multiply(kwargs['strides'], x.dtype.itemsize).tolist()
-            result = np.lib.stride_tricks.as_strided(x, **kwargs, subok=True)
-            if hasattr(result, 'symbolic'):
-                result.symbolic = f"np.lib.stride_tricks.as_strided({', '.join(result._symbolic_args((x,), kwargs))})"
-            return result
-
-        def to_cpu(self, x): return x.view(np.ndarray)
-
-        def broadcast_to(self, x, y): return np.broadcast_to(x, y.shape)
+        def to_cpu(x): return x.view(np.ndarray)
 
         # naming conventions
         pow = np.power
         mul = np.multiply
 
-        def arange(self, n):
-            return np.arange(n, like=self.Array([]))
+        def arange(n):
+            return np.arange(n, like=Tensor.device.Array([]))
 
     class GPU:
         class Array:
@@ -302,11 +302,9 @@ class Device(object):
 
                 return result
 
-# pretty print arrays
-# np.set_printoptions(formatter={'float': lambda x: "{0:0.4f}".format(x)})
 
 class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
-    device = Device.CPU()
+    device = Device.CPU
 
     def __init__(self, data):
         assert isinstance(data, type(Tensor.device.Array([])))
@@ -358,36 +356,33 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         assert method == '__call__'
-        return self.__array_function__(ufunc, None, inputs, kwargs)
+        f = np.core.overrides.array_function_dispatch(Tensor.device.default_dispatcher, verify=False, module='numpy')(ufunc)
+        return self.__array_function__(f, None, inputs, kwargs)
 
     def __array_function__(self, func, types, inputs, kwargs):
-        forward = getattr(Tensor.device, func.__name__)
         backward = getattr(Tensor, f"{func.__name__}_backward")
 
-        args = tuple(x.data if isinstance(x, Tensor)
-                else Tensor.device.Array(x) for x in inputs)
+        args = tuple(x.data if isinstance(x, Tensor) else x for x in inputs)
+        meta = tuple(x for x in inputs if isinstance(x, Tensor))
 
-        self.data = forward(*args, **kwargs)
+        self.data = out = func(*args, **kwargs)
 
         # save intermediate variables and (output) for backward pass
-        self.arguments.append((*inputs[1:], *args, self.data, kwargs))
+        self.arguments.append((meta, *args, out, kwargs))
         self.backward_fxns.append(backward)
 
         return self
 
     def __getattr__(self, attr):
-        func = getattr(Tensor.device, attr)
-        @functools.wraps(func)
-        def wrapper(*operands, **kwargs):
-            return self.__array_function__(func, None, (self, *operands), kwargs)
-        return wrapper
+        return functools.partial(getattr(Tensor.device, attr), self)
 
     def unbroadcast(backward):
         # summation is the dual of broadcasting
         def reduce(grad, inp):
-            mask = np.insert(inp.shape, 0, [-1]*abs(grad.ndim - inp.ndim)) != grad.shape
+            shape = np.asarray(inp).shape
+            mask = np.insert(shape, 0, [-1]*abs(grad.ndim - len(shape))) != grad.shape
             if axis := tuple( np.r_[:grad.ndim][mask] ):
-                return Tensor.device.reshape(Tensor.device.sum(grad, axis=axis), inp.shape)
+                return Tensor.device.reshape(Tensor.device.sum(grad, axis=axis), shape)
             return grad
         @functools.wraps(backward)
         def wrapper(dv, x, y, out, **kwargs):
@@ -396,32 +391,33 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def propagate(backward):
         @functools.wraps(backward)
-        def wrapper(dv, operand, x, y, out, **kwargs):
-            dy, dx = backward(dv, x, y, out, **kwargs)
-            if isinstance(operand, Tensor):
+        def wrapper(dv, operands, *args, **kwargs):
+            dy, dx = backward(dv, *args, **kwargs)
+            for operand in operands[1:]:
                 operand._backward(dy)
             return dx
         return wrapper
 
     # ========== unary ops ==========
 
-    def relu_backward(dv, x, out): 
-        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, Tensor.device.Array(0)))
+    def maximum_backward(dv, meta, x, y, out): 
+        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, y))
 
-    def exp_backward(dv, x, out):
+    def exp_backward(dv, meta, x, out):
         return Tensor.device.mul(dv, out)
 
-    def log_backward(dv, x, out):
+    def log_backward(dv, meta, x, out):
         return Tensor.device.mul(dv, Tensor.device.pow(x, Tensor.device.Array(-1)))
     
     # ========== reduce ops ==========
 
-    def sum_backward(dv, x, out, axis=None, keepdims=False):
+    def sum_backward(dv, meta, x, out, axis=None, keepdims=False):
+        x = x.data # temp fix
         if x.ndim > dv.ndim:
             dv = Tensor.device.reshape(dv, (*dv.shape, 1))
-        return Tensor.device.broadcast_to(dv, x)
+        return Tensor.device.broadcast_to(dv, x.shape)
     
-    def amax_backward(dv, x, out, axis=None, keepdims=False):
+    def amax_backward(dv, meta, x, out, axis=None, keepdims=False):
         if keepdims:
             dv = dv.squeeze() # remove empty dims
         r = Tensor.device.reshape(x, (*dv.shape, -1)) # flatten reduced axes
@@ -455,17 +451,16 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     # ========== processing ops ==========
     
     @propagate
-    @unbroadcast
-    def einsum_backward(dv, x, y, out, subscripts='i...j,j...k->i...k'):
+    def einsum_backward(dv, subscripts, x, y, out):
         input_subs, output_subs = subscripts.split('->')
         x_subs, y_subs = input_subs.split(',')
         reduced_subscripts_x = set(x_subs) - set(output_subs + y_subs)
         x_subs_non_reduced = "".join(filter(lambda x: x not in reduced_subscripts_x, x_subs))
-        dx = Tensor.device.einsum(dv, y, subscripts=f"{output_subs},{y_subs}->{x_subs_non_reduced}")
+        dx = Tensor.device.einsum(f"{output_subs},{y_subs}->{x_subs_non_reduced}", dv, y)
 
         reduced_subscripts_y = set(y_subs) - set(output_subs + x_subs)
         y_subs_non_reduced = "".join(filter(lambda y: y not in reduced_subscripts_y, y_subs))
-        dy = Tensor.device.einsum(dv, x, subscripts=f"{output_subs},{x_subs}->{y_subs_non_reduced}")
+        dy = Tensor.device.einsum(f"{output_subs},{x_subs}->{y_subs_non_reduced}", dv, x)
 
         if reduced_subscripts_x:
             raise NotImplementedError # Tiling not implemented
@@ -475,9 +470,11 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
         return dy, dx
 
-    def as_strided_backward(dv, x, out, **kwargs):
+    def as_strided_backward(dv, meta, x, out, **kwargs):
         assert dv.shape == out.shape
         indices = Tensor.device.arange(np.prod(x.shape))
+
+        kwargs['strides'] = tuple(indices.strides * (kwargs['strides'] // np.min(kwargs['strides'])))
         indices = Tensor.device.as_strided(indices, **kwargs)
 
         # flatten operands
@@ -487,10 +484,13 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     # ========== composite ops ==========
 
+    def relu(self):
+        return self.maximum(0)
+
     def window_view(self, kernel_size=(2,2), stride=1):
         N, cin, *in_shape, kdims = *self.shape, len(kernel_size)
 
-        strides = np.floor_divide(self.data.strides, self.data.dtype.itemsize) # normalized strides
+        strides = self.data.strides
         # get window shape and strides
         truncated_out_shape = *((xin - kin) // 1 + 1 for xin, kin in zip(in_shape, kernel_size)),
         out_shape = N, cin, *truncated_out_shape, *kernel_size
@@ -500,7 +500,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         return self.as_strided(shape=out_shape, strides=out_strides)
 
     def einsum(self, subscripts, *operands):
-        return self.__getattr__('einsum')(*operands, subscripts=subscripts)
+        return Tensor.device.einsum(subscripts, self, *operands)
 
     def div(self, x):
         assert isinstance(x, type(self))
