@@ -401,13 +401,13 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     # ========== unary ops ==========
 
     def maximum_backward(dv, meta, x, y, out): 
-        return Tensor.device.mul(dv, Tensor.device.greater_equal(x, y))
+        return dv * (x >= y)
 
     def exp_backward(dv, meta, x, out):
-        return Tensor.device.mul(dv, out)
+        return dv * out
 
     def log_backward(dv, meta, x, out):
-        return Tensor.device.mul(dv, Tensor.device.pow(x, Tensor.device.Array(-1)))
+        return dv * x ** -1
     
     # ========== reduce ops ==========
 
@@ -428,13 +428,12 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         dv = Tensor.device.reshape(dv, (*dv.shape, 1))
 
         mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1]))
-        r = Tensor.device.mul(mask, dv)
-        return Tensor.device.reshape(r, x.shape)
+        return Tensor.device.reshape(mask * dv, x.shape)
 
     # ========== binary ops ==========
 
     def pow_backward(dv, operand, x, y, out):
-        return Tensor.device.mul(dv, Tensor.device.mul(y, Tensor.device.pow(x, y-1.0)))
+        return dv * y * x ** y-1.0
     power_backward = pow_backward
 
     @propagate
@@ -445,7 +444,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     @propagate
     @unbroadcast
     def mul_backward(dv, x, y, out):
-        return Tensor.device.mul(dv, x), Tensor.device.mul(dv, y)
+        return dv * x, dv * y
     multiply_backward = mul_backward
 
     # ========== processing ops ==========
@@ -584,7 +583,7 @@ class Optimizer:
         self.t = 0
 
     def step(self):
-        self.t = Tensor.device.add(self.t, Tensor.device.Array(1))
+        self.t += 1
         self._step(self.t, *self.args)
 
     @abstractmethod
