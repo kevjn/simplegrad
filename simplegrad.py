@@ -356,8 +356,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         assert method == '__call__'
-        f = np.core.overrides.array_function_dispatch(Tensor.device.default_dispatcher, verify=False, module='numpy')(ufunc)
-        return self.__array_function__(f, None, inputs, kwargs)
+        return self.__array_function__(ufunc, None, inputs, kwargs)
 
     def __array_function__(self, func, types, inputs, kwargs):
         backward = getattr(Tensor, f"{func.__name__}_backward")
@@ -386,15 +385,16 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
             return grad
         @functools.wraps(backward)
         def wrapper(dv, x, y, out, **kwargs):
-            return tuple(reduce(*args) for args in zip(backward(dv, x, y, out, **kwargs), (y, x)))
+            yield from (reduce(*args) for args in zip(backward(dv, x, y, out, **kwargs), (x, y)))
         return wrapper
 
     def propagate(backward):
         @functools.wraps(backward)
         def wrapper(dv, operands, *args, **kwargs):
-            dy, dx = backward(dv, *args, **kwargs)
+            backward_ = backward(dv, *args, **kwargs)
+            dx = next(backward_)
             for operand in operands[1:]:
-                operand._backward(dy)
+                operand._backward(next(backward_))
             return dx
         return wrapper
 
@@ -433,18 +433,19 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     # ========== binary ops ==========
 
     def pow_backward(dv, operand, x, y, out):
-        return dv * y * x ** y-1.0
+        return dv * y * x ** (y-1)
     power_backward = pow_backward
 
     @propagate
     @unbroadcast
     def add_backward(dv, x, y, out):
-        return dv, dv
+        yield from (dv, dv)
 
     @propagate
     @unbroadcast
     def mul_backward(dv, x, y, out):
-        return dv * x, dv * y
+        yield dv * y
+        yield dv * x
     multiply_backward = mul_backward
 
     # ========== processing ops ==========
@@ -455,19 +456,11 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         x_subs, y_subs = input_subs.split(',')
         reduced_subscripts_x = set(x_subs) - set(output_subs + y_subs)
         x_subs_non_reduced = "".join(filter(lambda x: x not in reduced_subscripts_x, x_subs))
-        dx = Tensor.device.einsum(f"{output_subs},{y_subs}->{x_subs_non_reduced}", dv, y)
+        yield Tensor.device.einsum(f"{output_subs},{y_subs}->{x_subs_non_reduced}", dv, y)
 
         reduced_subscripts_y = set(y_subs) - set(output_subs + x_subs)
         y_subs_non_reduced = "".join(filter(lambda y: y not in reduced_subscripts_y, y_subs))
-        dy = Tensor.device.einsum(f"{output_subs},{x_subs}->{y_subs_non_reduced}", dv, x)
-
-        if reduced_subscripts_x:
-            raise NotImplementedError # Tiling not implemented
-
-        if reduced_subscripts_y:
-            raise NotImplementedError # Tiling not implemented
-
-        return dy, dx
+        yield Tensor.device.einsum(f"{output_subs},{x_subs}->{y_subs_non_reduced}", dv, x)
 
     def as_strided_backward(dv, meta, x, out, **kwargs):
         assert dv.shape == out.shape
