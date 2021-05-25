@@ -59,9 +59,6 @@ class Device(object):
         pow = np.power
         mul = np.multiply
 
-        def arange(n):
-            return np.arange(n, like=Tensor.device.Array([]))
-
     class GPU:
         class Array:
             def __init__(self, shape):
@@ -327,7 +324,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def __getitem__(self, idx):
         def backward(dv, shape, idx):
             size = np.prod(shape)
-            indices = Tensor.device.arange(size)
+            indices = Tensor.device.arange(size, like=Tensor.device.Array([]))
             indices = Tensor.device.reshape(indices, shape)[idx]
 
             # flatten operands
@@ -427,7 +424,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         max_idx = Tensor.device.reshape(max_idx, (*max_idx.shape, 1))
         dv = Tensor.device.reshape(dv, (*dv.shape, 1))
 
-        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1]))
+        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1], like=Tensor.device.Array([])))
         return Tensor.device.reshape(mask * dv, x.shape)
 
     # ========== binary ops ==========
@@ -464,7 +461,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def as_strided_backward(dv, meta, x, out, **kwargs):
         assert dv.shape == out.shape
-        indices = Tensor.device.arange(np.prod(x.shape))
+        indices = Tensor.device.arange(np.prod(x.shape), like=Tensor.device.Array([]))
 
         kwargs['strides'] = tuple(indices.strides * (kwargs['strides'] // np.min(kwargs['strides'])))
         indices = Tensor.device.as_strided(indices, **kwargs)
