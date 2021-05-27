@@ -6,14 +6,27 @@ from abc import abstractmethod
 import pyopencl as cl
 import pyopencl.array
 
-class NumpyMeta(type):
+class NumpyType(type):
     def __getattr__(cls, attr):
         return getattr(np, attr)
 
-class Device(object):
-    class CPU(metaclass=NumpyMeta):
+class Numpy(metaclass=NumpyType):
+    # np.lib.stride_tricks.as_strided does not use a dispatcher by default
+    def as_strided(x, **kwargs):
+        return np.core.overrides.array_function_dispatch \
+                (lambda *args, **kwargs: args, verify=False) \
+                (np.lib.stride_tricks.as_strided) (x, **kwargs)
 
-        class Array(np.ndarray):
+    # naming conventions
+    pow = np.power
+    mul = np.multiply
+
+    def to_cpu(x): return x.view(np.ndarray)
+
+
+class Device(object):
+    class CPU:
+        class SymbolicArray(np.ndarray):
             def __new__(cls, arr, symbolic=None, **kwargs):
                 arr = np.array(arr, copy=False, **kwargs)
                 obj = arr.view(cls)
@@ -28,16 +41,18 @@ class Device(object):
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 assert method == '__call__'
                 return np.core.overrides.array_function_dispatch \
-                    (Device.CPU.default_dispatcher, verify=False, module='numpy') (ufunc) \
+                    (lambda *args, **kwargs: args, verify=False, module='numpy') (ufunc) \
                     (*inputs, **kwargs)
 
             def __array_function__(self, func, types, inputs, kwargs):
                 assert func.__module__
-                symbolic = f"{func.__module__}.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
-
-                items = (i.view(np.ndarray) if isinstance(i, Device.CPU.Array) else i for i in inputs)
-                out = Device.CPU.Array(func(*items, **kwargs), symbolic)
-                return out
+                return Device.CPU.SymbolicArray (
+                    func (
+                        *(x.view(np.ndarray) if isinstance(x, Device.CPU.SymbolicArray) else x for x in inputs),
+                        **kwargs
+                    ),
+                    f"{func.__module__}.{func.__name__}({', '.join(self._symbolic_args(inputs, kwargs))})"
+                )
 
             def _symbolic_args(self, inputs, kwargs): 
                 return it.chain (
@@ -45,45 +60,34 @@ class Device(object):
                     (f'{x}={repr(y)}' for x,y in kwargs.items()),
                 )
 
-        def default_dispatcher(*args, **kwargs): 
-           return args
-
-        def as_strided(x, **kwargs):
-            return np.core.overrides.array_function_dispatch \
-                  (Device.CPU.default_dispatcher, verify=False) \
-                  (np.lib.stride_tricks.as_strided) (x, **kwargs)
-
-        def to_cpu(x): return x.view(np.ndarray)
-
-        # naming conventions
-        pow = np.power
-        mul = np.multiply
-
     class GPU:
-        class Array:
-            def __init__(self, shape):
-                self.dtype = np.dtype(np.float32)
-                self.size = int(np.prod(shape))
+        class Array(np.lib.mixins.NDArrayOperatorsMixin):
+
+            def __init__(self, shape, dtype=np.float32, data=None):
                 self.shape = shape
+                self.dtype = np.dtype(dtype)
+                self.size = int(np.prod(shape))
                 self.strides = (self.dtype.itemsize, *np.multiply.accumulate(shape[:0:-1]) * self.dtype.itemsize)[::-1]
                 self.ndim = len(shape)
                 self.nbytes = self.dtype.itemsize * self.size
-                self.symbolic = 'temp'
+                self.data = data
 
-                assert self.strides == np.empty(tuple(shape)).astype(np.float32).strides
+            def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+                assert method == '__call__'
+                return self.__array_function__(ufunc, None, inputs, kwargs)
+
+            def __array_function__(self, func, types, inputs, kwargs):
+                func = getattr(Device.GPU, func.__name__)
+                return func(*inputs, **kwargs)
 
             def __repr__(self):
-                return repr(self.get())
-            
-            def __sub__(x, y): return Tensor.device.add(x, Tensor.device.mul(y, Tensor.device.to_device(-1)))
-            def __rsub__(x, y): return Tensor.device.add(y, Tensor.device.mul(x, Tensor.device.to_device(-1)))
-
-            def __truediv__(x, y): return Tensor.device.mul(x, Tensor.device.pow(y, Tensor.device.to_device(-1)))
-            def __rtruediv__(x, y): return Tensor.device.mul(y, Tensor.device.pow(x, Tensor.device.to_device(-1)))
+                return f"GPUArray({np.array2string(self.get(), 88, 4, True, ', ', 'GPUArray(', suffix=')')})"
 
             def get(self):
-                res = np.empty(self.data.size // 4, np.float32)
+                res = np.empty(self.data.size // 4, self.dtype)
                 cl.enqueue_copy(Device.GPU.queue, res, self.data)
+                if not self.shape:
+                    return res
                 return np.lib.stride_tricks.as_strided(res, self.shape, self.strides)
 
             def reshape(self, *shape):
@@ -103,24 +107,10 @@ class Device(object):
 
             def transpose(self, *order):
                 shape = tuple(np.take(self.shape, order))
-                result = Device.GPU.Array(shape)
+                result = self.__class__(shape)
                 result.strides = tuple(np.take(self.strides, order))
                 result.data = self.data
                 return result
-
-            @classmethod
-            def from_numpy(cls, arr):
-                arr = arr.astype(np.float32) # atleast1d
-                obj = cls(arr.shape)
-                obj.data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE |
-                              cl.mem_flags.COPY_HOST_PTR, hostbuf=arr)
-                return obj
-
-            @classmethod
-            def empty(cls, shape):
-                obj = cls(shape)
-                obj.data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE, obj.nbytes)
-                return obj
 
             def copy(self):
                 result = Device.GPU.Array(self.shape)
@@ -141,42 +131,50 @@ class Device(object):
                 name, parser = tokens
                 parser = getattr(self.Parser, parser)
                 wrapped_gpu_op = self.Parser.wrapper(parser, functools.partial(kernel, self.queue))
-                setattr(self, name, wrapped_gpu_op)
+                setattr(Device.GPU, name, wrapped_gpu_op)
 
-                if f"__{name}__" in dir(int):
-                    setattr(Device.GPU.Array, f"__{name}__", wrapped_gpu_op)
-                    setattr(Device.GPU.Array, f"__r{name}__", lambda x,y: wrapped_gpu_op(y,x))
-
-        def to_device(self, x, name=None):
-            if isinstance(x, Device.GPU.Array):
-                return x.copy()
-            return self.Array.from_numpy(np.atleast_1d(x))
-
-        def to_cpu(self, x):
+        def to_cpu(x):
             return x.get()
 
-        def reshape(self, x, shape):
+        def reshape(x, shape):
             return x.reshape(*shape)
 
-        @classmethod
-        def arange(self, n):
-            return Device.GPU.Array.from_numpy(np.arange(n))
+        def broadcast_to(x, shape):
+            cpu_res = np.broadcast_to(x.get(), shape)
+            return Device.GPU.array(cpu_res.copy())
+
+        def array(arr, dtype=np.float32, ndmin=1, **kwargs):
+            arr = np.array(arr, copy=False, dtype=dtype, ndmin=ndmin, **kwargs)
+            if arr.size:
+                data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE |
+                                    cl.mem_flags.COPY_HOST_PTR, hostbuf=arr)
+            else:
+                data = None
+            return Device.GPU.Array(arr.shape, dtype, data)
+
+        def empty(shape, dtype=np.float32):
+            arr = Device.GPU.Array(shape, dtype)
+            arr.data = cl.Buffer(Device.GPU.ctx, cl.mem_flags.READ_WRITE, arr.nbytes)
+            return arr
+
+        def arange(n):
+            return Device.GPU.array(np.arange(n), dtype=np.int32)
 
         class Parser(object):
             def wrapper(parser, kernel):
                 def _wrapper(*args, **kwargs):
-                    args = tuple(arg if isinstance(arg, Device.GPU.Array) 
-                                 else Tensor.device.to_device(arg) for arg in args)
+                    args = tuple(x if isinstance(x, (str, Device.GPU.Array)) 
+                                else Device.GPU.array(x) for x in args)
                     return parser(kernel, *args, **kwargs)
                 return _wrapper
-
+            
             def elementwise(kernel, *args, **kwargs):
                 # allocate output buffer on device
-                res = Device.GPU.Array.empty(args[0].shape)
+                res = Device.GPU.empty(args[0].shape)
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
-            def broadcast(kernel, x, y, **kwargs):
+            def broadcast(kernel, x, y):
                 assert x.ndim > 0 and y.ndim > 0, "operands needs to be atleast 1d"
 
                 res_shape = np.broadcast_shapes(x.shape, y.shape)
@@ -189,7 +187,7 @@ class Device(object):
                 xstrides = np.broadcast_to(xstrides, res_shape).flatten()
                 ystrides = np.broadcast_to(ystrides, res_shape).flatten()
 
-                res = Device.GPU.Array.empty(res_shape)
+                res = Device.GPU.empty(res_shape)
                 res_strides = np.arange(np.prod(res_shape))
                 
                 # convert to opencl
@@ -203,7 +201,7 @@ class Device(object):
 
                 return res
 
-            def einsum(kernel, x, y, subscripts):
+            def einsum(kernel, subscripts, x, y):
                 # combines broadcasting and reduction parsing
                 x_subs, y_subs, out_subs = subscripts.replace('->',',').split(',')
 
@@ -226,7 +224,7 @@ class Device(object):
                     y = y.transpose(*[out_subs.index(x) for x in y_subs])
 
                     # standard multiplication
-                    return Tensor.device.mul(x, y)
+                    return Device.GPU.multiply(x, y)
 
                 xstrides = np.arange(np.prod(x.shape), dtype=np.int32)
                 stride = [int(s in x_subs and x.strides[x_subs.index(s)]) for s in out_subs]
@@ -249,7 +247,7 @@ class Device(object):
 
                 reduced_axis_size = np.prod(reduced_shape)
 
-                res = Device.GPU.Array.empty(res_shape)
+                res = Device.GPU.empty(res_shape)
                 res_strides = np.arange(np.prod(res_shape), dtype=np.int32)
 
                 # convert to opencl
@@ -269,7 +267,7 @@ class Device(object):
                 return res
 
             def reduce(kernel, x, axis=None, keepdims=False):
-                axis = tuple(np.arange(x.ndim)[list([axis])].flatten())
+                axis = tuple(np.arange(x.ndim)[tuple([axis])].flatten())
 
                 meta = np.stack([x.shape, x.strides]) 
                 reduced_shape, reduced_strides = meta[:,axis]
@@ -280,10 +278,11 @@ class Device(object):
                 xstrides = np.lib.stride_tricks.as_strided(strides, result_shape, xstrides).copy()
 
                 if keepdims:
-                    result_shape = np.insert(result_shape, axis, 1)
+                    np.put(meta[0], axis, 1)
+                    result_shape = meta[0]
                 if not result_shape.size:
                     result_shape = (1,)
-                result = Device.GPU.Array.empty(tuple(result_shape))
+                result = Device.GPU.empty(tuple(result_shape))
                 result_strides = np.arange(np.prod(result_shape), dtype=np.int32)
 
                 # convert to opencl
@@ -301,10 +300,10 @@ class Device(object):
 
 
 class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
-    device = Device.CPU
+    device = Numpy
 
     def __init__(self, data):
-        assert isinstance(data, type(Tensor.device.Array([])))
+        assert isinstance(data, type(Tensor.device.array([])))
         self.data = data
         self.grad = 0
 
@@ -312,7 +311,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         self.arguments = []
 
     def __repr__(self):
-        return f"Tensor({np.array2string(self.data, 88, 4, True, ', ', 'Tensor(', suffix=')')})"
+        return f"Tensor({np.array2string(self.cpu(), 88, 4, True, ', ', 'Tensor(', suffix=')')})"
 
     def cpu(self):
         return Tensor.device.to_cpu(self.data)
@@ -324,7 +323,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def __getitem__(self, idx):
         def backward(dv, shape, idx):
             size = np.prod(shape)
-            indices = Tensor.device.arange(size, like=Tensor.device.Array([]))
+            indices = Tensor.device.arange(size, like=Tensor.device.array([]))
             indices = Tensor.device.reshape(indices, shape)[idx]
 
             # flatten operands
@@ -349,7 +348,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def backward(self):
         assert self.data.size == 1, 'output must be scalar for implicit grad creation'
         # implicit gradient creation
-        self._backward(Tensor.device.Array(1.0, ndmin=self.data.ndim))
+        self._backward(Tensor.device.array(1.0, ndmin=self.data.ndim))
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         assert method == '__call__'
@@ -375,7 +374,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def unbroadcast(backward):
         # summation is the dual of broadcasting
         def reduce(grad, inp):
-            shape = np.asarray(inp).shape
+            shape = inp.shape # np.asarray(inp).shape
             mask = np.insert(shape, 0, [-1]*abs(grad.ndim - len(shape))) != grad.shape
             if axis := tuple( np.r_[:grad.ndim][mask] ):
                 return Tensor.device.reshape(Tensor.device.sum(grad, axis=axis), shape)
@@ -409,7 +408,6 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     # ========== reduce ops ==========
 
     def sum_backward(dv, meta, x, out, axis=None, keepdims=False):
-        x = x.data # temp fix
         if x.ndim > dv.ndim:
             dv = Tensor.device.reshape(dv, (*dv.shape, 1))
         return Tensor.device.broadcast_to(dv, x.shape)
@@ -424,7 +422,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         max_idx = Tensor.device.reshape(max_idx, (*max_idx.shape, 1))
         dv = Tensor.device.reshape(dv, (*dv.shape, 1))
 
-        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1], like=Tensor.device.Array([])))
+        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1], like=Tensor.device.array([])))
         return Tensor.device.reshape(mask * dv, x.shape)
 
     # ========== binary ops ==========
@@ -461,7 +459,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def as_strided_backward(dv, meta, x, out, **kwargs):
         assert dv.shape == out.shape
-        indices = Tensor.device.arange(np.prod(x.shape), like=Tensor.device.Array([]))
+        indices = Tensor.device.arange(np.prod(x.shape), like=Tensor.device.array([]))
 
         kwargs['strides'] = tuple(indices.strides * (kwargs['strides'] // np.min(kwargs['strides'])))
         indices = Tensor.device.as_strided(indices, **kwargs)
@@ -510,8 +508,10 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         _max.add(_sub)
         return self.sub(_max)
 
-    def mean(self, axis=-1):
-        div = Tensor.device.Array(1/np.prod(np.take(self.shape, axis)))
+    def mean(self, axis=None):
+        if not axis:
+            axis = tuple(np.r_[:self.data.ndim])
+        div = Tensor.device.array(1/np.prod(np.take(self.shape, axis)))
         return self.sum(axis=axis, keepdims=True).mul(div)
 
     def layer_norm(self, axes, weight, bias, eps=1e-5):
@@ -591,8 +591,8 @@ class Adam(Optimizer):
 
         super().__init__(params, *(learning_rate, epsilon, beta1, beta2), **kwargs)
 
-        self.m = [Tensor.device.Array(np.zeros(p.shape)) for p in params]
-        self.v = [Tensor.device.Array(np.zeros(p.shape)) for p in params]
+        self.m = [Tensor.device.array(np.zeros(p.shape)) for p in params]
+        self.v = [Tensor.device.array(np.zeros(p.shape)) for p in params]
 
     def _step(self, t, lr, eps, b1, b2):
         # bias correction
