@@ -67,10 +67,11 @@ class Device(object):
                 self.shape = shape
                 self.dtype = np.dtype(dtype)
                 self.size = int(np.prod(shape))
-                self.strides = (self.dtype.itemsize, *np.multiply.accumulate(shape[:0:-1]) * self.dtype.itemsize)[::-1]
+                self.strides = tuple(np.multiply.accumulate([1, *shape[:0:-1]]) * self.dtype.itemsize)[::-1]
                 self.ndim = len(shape)
                 self.nbytes = self.dtype.itemsize * self.size
                 self.data = data
+                self.base = None
 
             def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
                 assert method == '__call__'
@@ -137,11 +138,24 @@ class Device(object):
             return x.get()
 
         def reshape(x, shape):
+            if x.base:
+                return Device.GPU.broadcast_to(x, shape)
             return x.reshape(*shape)
 
         def broadcast_to(x, shape):
-            cpu_res = np.broadcast_to(x.get(), shape)
-            return Device.GPU.array(cpu_res.copy())
+            if x.base:
+                x = x.base
+
+            # set strides to 0 for all singleton dimensions
+            strides = np.where(np.equal(x.shape, 1), 0, x.strides)
+            # add empty trailing strides if needed
+            strides = np.append(strides, np.array([0]*abs(x.ndim - len(shape)), int))
+            
+            arr = Device.GPU.Array(shape)
+            arr.data = x.data
+            arr.strides = tuple(strides)
+            arr.base = x
+            return arr
 
         def array(arr, dtype=np.float32, ndmin=1, **kwargs):
             arr = np.array(arr, copy=False, dtype=dtype, ndmin=ndmin, **kwargs)
