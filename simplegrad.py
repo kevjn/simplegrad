@@ -188,28 +188,21 @@ class Device(object):
                 kernel([args[0].size], None, *(a.data for a in (*args, res)))
                 return res
 
-            def broadcast(kernel, x, y):
-                assert x.ndim > 0 and y.ndim > 0, "operands needs to be atleast 1d"
-
-                res_shape = np.broadcast_shapes(x.shape, y.shape)
-                xstrides = np.arange(np.prod(x.shape), dtype=np.int32).reshape(x.shape)
-                ystrides = np.arange(np.prod(y.shape), dtype=np.int32).reshape(y.shape)
-
-                xstrides.strides = x.strides
-                ystrides.strides = y.strides
-
-                xstrides = np.broadcast_to(xstrides, res_shape).flatten()
-                ystrides = np.broadcast_to(ystrides, res_shape).flatten()
-
+            def broadcast(kernel, *args):
+                res_shape = np.broadcast_shapes(*(x.shape for x in args))
                 res = Device.GPU.empty(res_shape)
-                res_strides = np.arange(np.prod(res_shape))
+                res_strides = np.arange(np.prod(res_shape), dtype=np.int32)
+
+                args_strides = tuple(
+                    np.broadcast_to(
+                    np.lib.stride_tricks.as_strided(
+                    np.arange(np.prod(x.shape), dtype=np.int32), x.shape, x.strides),
+                    res_shape).flatten()
+                    for x in args)
                 
                 # convert to opencl
-                strides = [cl.array.to_device(Device.GPU.queue, x.astype(np.int32)) for x in 
-                                             (xstrides, ystrides, res_strides)]
-
-                args = (x, y, res)
-                args = tuple(it.chain(*zip((a for a in args), strides)))
+                args = tuple(it.chain(*zip((*args, res), (cl.array.to_device(Device.GPU.queue, x) 
+                                                          for x in (*args_strides, res_strides)))))
 
                 kernel([np.prod(res_shape)], None, *(arg.data for arg in args))
 
