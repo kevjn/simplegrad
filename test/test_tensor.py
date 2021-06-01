@@ -276,3 +276,59 @@ def test_train_simple_classifier():
     plt.scatter(X[:, 0], X[:, 1], c=y_true, s=5, cmap="brg", alpha=0.5)
     plt.grid()
     plt.show()
+
+def test_train_simple_classifier_with_torch_optim():
+    num_classes = 3
+
+    X, y_true = spiral_data(samples=1000, classes=num_classes)
+
+    # one-hot encode sparse y
+    y = np.eye(num_classes)[y_true]
+
+    # references to pytorch tensors used in optimizer
+    _w0 = torch.randn(2, 512, requires_grad=True)
+    _b0 = torch.randn(512, requires_grad=True)
+    _w1 = torch.randn(512, num_classes, requires_grad=True)
+    _b1 = torch.randn(num_classes, requires_grad=True)
+
+    w0 = Tensor(_w0.data.numpy())
+    b0 = Tensor(_b0.data.numpy())
+    w1 = Tensor(_w1.data.numpy())
+    b1 = Tensor(_b1.data.numpy())
+
+    optim = torch.optim.Adam([_w0, _b0, _w1, _b1], lr=0.05)
+
+    for epoch in range(200):
+        out = Tensor(X).einsum("ij,jk->ik", w0).add(b0).relu().einsum("ij,jk->ik", w1).add(b1)
+        out = out.logsoftmax()
+
+        # Categorical cross-entropy loss
+        loss = Tensor(y).mul(out).mul(-1.0).sum(axis=1).mean()
+
+        loss.backward()
+
+        # transfer gradients to pytorch optimizer
+        for pt, ps in zip([_w0, _b0, _w1, _b1], [w0, b0, w1, b1]):
+            pt.grad = torch.tensor(ps.grad, dtype=pt.dtype)
+
+        # step optimizer
+        optim.step()
+
+    assert loss.data[0] < 0.4
+
+    # visualize decision boundary
+    num_points = 100
+    x_1 = np.linspace(-1.5, 1.5, num_points)
+    x_2 = np.linspace(-1.5, 1.5, num_points)
+
+    X1, Y2 = np.meshgrid(x_1, x_2)
+    k = np.dstack((X1, Y2))
+    out = Tensor(k).einsum('ijk,kl->ijl', w0).add(b0).relu()\
+        .einsum('ijk,kl->ijl', w1).add(b1).softmax()
+    res = out.cpu().argmax(axis=-1)
+
+    cs = plt.contourf(X1, Y2, res, cmap="brg", alpha=0.5)
+    plt.colorbar(cs)
+    plt.scatter(X[:, 0], X[:, 1], c=y_true, s=5, cmap="brg", alpha=0.5)
+    plt.grid()
+    plt.show()
