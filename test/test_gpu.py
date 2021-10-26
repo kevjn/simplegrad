@@ -5,9 +5,6 @@ from simplegrad import Tensor
 from accel.gpu import GPU
 
 np.random.seed(1337)
-GPU()
-Tensor.device.array = GPU.array
-Tensor.device.to_cpu = GPU.to_cpu
 
 def equal_sum_over_axis(arr, *, axis):
     res_cpu = np.sum(arr, axis=axis)

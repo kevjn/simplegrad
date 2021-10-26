@@ -1,8 +1,6 @@
 from simplegrad import Tensor, Adam
 from accel.symbolic import SymbolicArray
 
-Tensor.device.array = SymbolicArray
-
 import numpy, numpy as np
 np.random.seed(100)
 

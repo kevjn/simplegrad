@@ -22,7 +22,6 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     device = Numpy
 
     def __init__(self, data):
-        assert isinstance(data, type(Tensor.device.array([])))
         self.data = data
         self.grad = 0
 
@@ -67,7 +66,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def backward(self):
         assert self.data.size == 1, 'output must be scalar for implicit gradient creation'
         # implicit gradient creation
-        self._backward(Tensor.device.array(1.0, ndmin=self.data.ndim))
+        self._backward(Tensor.device.array(1.0, ndmin=self.data.ndim, like=type(self.data)([])))
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         assert method == '__call__'
@@ -141,7 +140,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
         max_idx = Tensor.device.reshape(max_idx, (*max_idx.shape, 1))
         dv = Tensor.device.reshape(dv, (*dv.shape, 1))
 
-        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1], like=Tensor.device.array([])))
+        mask = Tensor.device.equal(max_idx, Tensor.device.arange(r.shape[-1], like=type(dv)([])))
         return Tensor.device.reshape(mask * dv, x.shape)
 
     # ========== binary ops ==========
@@ -178,7 +177,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
 
     def as_strided_backward(dv, meta, x, out, **kwargs):
         assert dv.shape == out.shape
-        indices = Tensor.device.arange(np.prod(x.shape), like=Tensor.device.array([]))
+        indices = Tensor.device.arange(np.prod(x.shape), like=type(dv)([]))
 
         kwargs['strides'] = tuple(indices.strides * (kwargs['strides'] // np.min(kwargs['strides'])))
         indices = Tensor.device.as_strided(indices, **kwargs).copy()
@@ -229,7 +228,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def mean(self, axis=None):
         if not axis:
             axis = tuple(np.r_[:self.data.ndim])
-        div = Tensor.device.array(1/np.prod(np.take(self.shape, axis)))
+        div = Tensor.device.array(1/np.prod(np.take(self.shape, axis)), like=type(self.data)([]))
         return self.sum(axis=axis, keepdims=True).mul(div)
 
     def layer_norm(self, axes, weight, bias, eps=1e-5):

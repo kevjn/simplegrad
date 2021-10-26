@@ -68,20 +68,6 @@ class GPU:
         def copy(self):
             return GPU.copy(self) # only works for np.int32 type atm
 
-    def __init__(self):
-        # initialize opencl
-        GPU.ctx = cl.create_some_context()
-        GPU.queue = cl.CommandQueue(self.ctx)
-
-        prg = cl.Program(GPU.ctx, open('./accel/gpu_ops.cl').read()).build()
-        for kernel in prg.all_kernels():
-            tokens = kernel.function_name.split("__")
-            assert len(tokens) == 2
-            name, parser = tokens
-            parser = getattr(self.Parser, parser)
-            wrapped_gpu_op = self.Parser.wrapper(parser, functools.partial(kernel, self.queue))
-            setattr(GPU, name, wrapped_gpu_op)
-
     def to_cpu(x):
         return x.get()
 
@@ -272,3 +258,17 @@ class GPU:
             kernel([np.prod(result_shape)], None, *args)
 
             return result
+
+# initialize opencl
+GPU.ctx = cl.create_some_context()
+GPU.queue = cl.CommandQueue(GPU.ctx)
+
+# compile kernels and set appropriate GPU methods
+prg = cl.Program(GPU.ctx, open('./accel/gpu_ops.cl').read()).build()
+for kernel in prg.all_kernels():
+    tokens = kernel.function_name.split("__")
+    assert len(tokens) == 2
+    name, parser = tokens
+    parser = getattr(GPU.Parser, parser)
+    wrapped_gpu_op = GPU.Parser.wrapper(parser, functools.partial(kernel, GPU.queue))
+    setattr(GPU, name, wrapped_gpu_op)
