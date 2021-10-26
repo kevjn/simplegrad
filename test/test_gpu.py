@@ -1,14 +1,17 @@
 import numpy as np
-from simplegrad import Device, Tensor
 import torch
 
+from simplegrad import Tensor
+from accel.gpu import GPU
+
 np.random.seed(1337)
-Device.GPU()
-Tensor.device.array = Device.GPU.array
+GPU()
+Tensor.device.array = GPU.array
+Tensor.device.to_cpu = GPU.to_cpu
 
 def equal_sum_over_axis(arr, *, axis):
     res_cpu = np.sum(arr, axis=axis)
-    res_gpu = Tensor(Device.GPU.array(arr)).sum(axis=axis).data
+    res_gpu = Tensor(GPU.array(arr)).sum(axis=axis).data
     return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-05)
 
 def equal_sum_over_all_axes(arr):
@@ -21,13 +24,13 @@ def equal_sum_over_all_axes(arr):
 
 def equal_add(a: np.ndarray, b: np.ndarray):
     tensor_pytorch = torch.tensor(a).add(torch.tensor(b))
-    tensor_simplegrad = Tensor(Device.GPU.array(a)).add(Tensor(Device.GPU.array(b)))
+    tensor_simplegrad = Tensor(GPU.array(a)).add(Tensor(GPU.array(b)))
     return np.allclose(tensor_simplegrad.data.get(), tensor_pytorch.data.numpy(), atol=1e-07)
 
 def equal_einsum(subscripts, a: np.ndarray, b: np.ndarray):
     res_cpu = np.einsum(subscripts, a, b)
-    res_gpu = Tensor(Device.GPU.array(a, dtype=np.float32))\
-                .einsum(subscripts, Tensor(Device.GPU.array(b, dtype=np.float32))).data
+    res_gpu = Tensor(GPU.array(a, dtype=np.float32))\
+                .einsum(subscripts, Tensor(GPU.array(b, dtype=np.float32))).data
     return np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-06)
 
 def test_sum_reduction_kernel():
@@ -39,7 +42,7 @@ def test_sum_reduction_kernel():
 def test_sum_all_axes():
     a = np.random.randn(10,10,20,25).astype(np.float32)
 
-    res_gpu = Tensor(Device.GPU.array(a)).sum(axis=(0,1,2,3)).data
+    res_gpu = Tensor(GPU.array(a)).sum(axis=(0,1,2,3)).data
     res_cpu = np.sum(a, axis=None)
     assert np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
 
@@ -58,7 +61,7 @@ def test_sum_all_axes_at_once():
     a = np.random.randn(5,25,10,30).astype(np.float32)
 
     res_cpu = np.sum(a, axis=None)
-    res_gpu = Tensor(Device.GPU.array(a)).sum(axis=None).data
+    res_gpu = Tensor(GPU.array(a)).sum(axis=None).data
 
     assert np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-07)
 
@@ -141,7 +144,7 @@ def test_einsum_advanced():
     # conv2d
     subscripts = "abcdef,gbef->agcd"
 
-    res_gpu = Tensor(Device.GPU.array(a)).einsum(subscripts, Tensor(Device.GPU.array(b))).data
+    res_gpu = Tensor(GPU.array(a)).einsum(subscripts, Tensor(GPU.array(b))).data
     res_cpu = np.einsum(subscripts, a, b)
 
     assert np.allclose(res_cpu, res_gpu.get(), rtol=1e-04, atol=1e-05)
@@ -149,7 +152,7 @@ def test_einsum_advanced():
 
 def test_transpose():
     a = np.random.randn(1,2,3,4).astype(np.float32)
-    b = Device.GPU.array(a)
+    b = GPU.array(a)
 
     a = a.transpose(0,1,2,3)
     b = b.transpose(0,1,2,3)
@@ -220,7 +223,7 @@ def test_simple_backward_with_broadcasting():
     tensor_p = (t_p := torch.tensor(a, requires_grad=True)).add(w_p := torch.tensor(w, requires_grad=True)).relu().sum(axis=0).sum(axis=0).sum(axis=0)
     tensor_p.backward()
 
-    tensor = Tensor(Device.GPU.array(a)).add(w_s := Tensor(Device.GPU.array(w))).relu().sum(axis=0).sum(axis=0).sum(axis=0)
+    tensor = Tensor(GPU.array(a)).add(w_s := Tensor(GPU.array(w))).relu().sum(axis=0).sum(axis=0).sum(axis=0)
     tensor.backward()
 
     assert np.allclose(tensor.data.get(), tensor_p.data.numpy())
@@ -231,7 +234,7 @@ def test_sum_backward():
     a = np.random.randn(10,10)
     tensor_p = (tp := torch.tensor(a, requires_grad=True)).sum(axis=0).sum(axis=0)
     tensor_p.backward()
-    ts = Tensor(Device.GPU.array(a)).sum(axis=0).sum(axis=0)
+    ts = Tensor(GPU.array(a)).sum(axis=0).sum(axis=0)
     ts.backward()
 
     assert np.allclose(ts.data.get(), tensor_p.data.numpy())
@@ -243,14 +246,14 @@ def test_pow_backward_pass():
     tp = torch.tensor(a, requires_grad=True)
     tp.pow(torch.tensor(2)).sum().backward()
 
-    ts = Tensor(Device.GPU.array(a)).pow(2).sum()
+    ts = Tensor(GPU.array(a)).pow(2).sum()
     ts.backward()
 
     np.allclose(tp.grad.data.numpy(), ts.grad.get())
 
 def test_mean_backward():
     a = np.random.randn(10,10,1)
-    ts = Tensor(Device.GPU.array(a)).mean()
+    ts = Tensor(GPU.array(a)).mean()
     ts.backward()
 
 def test_relu_backward():
@@ -261,8 +264,8 @@ def test_relu_backward():
     wp = torch.tensor(w, requires_grad=True)
     tp.mul(wp).relu().mean().backward()
 
-    ws = Tensor(Device.GPU.array(w))
-    ts = Tensor(Device.GPU.array(a)).mul(ws).relu().mean()
+    ws = Tensor(GPU.array(w))
+    ts = Tensor(GPU.array(a)).mul(ws).relu().mean()
     ts.backward()
 
     assert np.allclose(tp.grad.data.numpy(), ts.grad.get())
@@ -289,14 +292,14 @@ def test_forward_and_backward_for_simple_classifier():
     lossp.backward() 
 
     # ========== simplegrad ==========
-    outs = Tensor(Device.GPU.array(X)).einsum("ij,jk->ik", w0s := Tensor(Device.GPU.array(w0)))\
-        .add(Tensor(Device.GPU.array(b0))).relu().einsum("ij,jk->ik", w1s := Tensor(Device.GPU.array(w1)))\
-        .add(Tensor(Device.GPU.array(b1)))
+    outs = Tensor(GPU.array(X)).einsum("ij,jk->ik", w0s := Tensor(GPU.array(w0)))\
+        .add(Tensor(GPU.array(b0))).relu().einsum("ij,jk->ik", w1s := Tensor(GPU.array(w1)))\
+        .add(Tensor(GPU.array(b1)))
 
     outs.logsoftmax()
 
     # Negative LL loss
-    loss = Tensor(Device.GPU.array(y)).mul(outs).mul(-1).sum(axis=1).mean()
+    loss = Tensor(GPU.array(y)).mul(outs).mul(-1).sum(axis=1).mean()
     loss.backward()
 
     assert np.allclose(outs.data.get(), outp.data.numpy(), rtol=1e-04, atol=1e-05)
