@@ -1,8 +1,8 @@
-__kernel void relu__elementwise(__global const float *a_g, __global float *res_g)
+__kernel void maximum__elementwise(__global const float *a_g, __global float *b_g, __global float *res_g)
 {
   int gid = get_global_id(0);
   float a = a_g[gid];
-  res_g[gid] = max(a, (float)0.);
+  res_g[gid] = max(a, (float)0.); // Currently, maximum is only used for ReLU
 }
 
 __kernel void greater_equal__elementwise(__global const float *a_g, __global float *b_g, __global float *res_g)
@@ -28,7 +28,7 @@ __kernel void equal__broadcast(__global const float *x_g,
   res_g[i] = x_g[ix] == y_g[iy];
 }
 
-__kernel void pow__broadcast(__global const float *x_g,
+__kernel void power__broadcast(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -61,7 +61,7 @@ __kernel void add__broadcast(__global const float *x_g,
   res_g[i] = x_g[ix] + y_g[iy];
 }
 
-__kernel void max__reduce(__global const float* buffer,
+__kernel void amax__reduce(__global const float* buffer,
             __global const int* strides,
             __global const int* reduced_axes_stride,
             __const int reduced_axis_size,
@@ -167,20 +167,14 @@ void sum__reduce(__global const float* buffer,
   result[idx] = accum;
 }
 
-__kernel void broadcast_to__broadcast(__global const float *dv_g,
-                          __global const int* dv_strides,
-                          __global const float *x_g, 
-                          __global const int* x_strides,
-                          __global float *res_g,
-                          __global int *res_strides)
+// Copy for non-contiguous memory (only works for int dtype)
+__kernel void copy__broadcast(__global const int *a_g,
+                          __global const int* a_strides,
+                          __global int *res_g,
+                          __global const int *res_strides)
 {
-  // TODO: remove this kernel and instead just change the shape and stride of the array
   int gid = get_global_id(0);
-
-  // broadcast dv
-  int i = res_strides[gid];
-  int idv = dv_strides[gid];
-  res_g[i] = dv_g[idv];
+  res_g[res_strides[gid]] = a_g[a_strides[gid]];
 }
 
 __kernel
@@ -213,7 +207,7 @@ void einsum__einsum(__global const float* x_g,
 }
 
 __kernel 
-void mul__broadcast(__global const float *x_g,
+void multiply__broadcast(__global const float *x_g,
                           __global const int* x_strides,
                           __global const float *y_g, 
                           __global const int* y_strides,
@@ -227,4 +221,15 @@ void mul__broadcast(__global const float *x_g,
   int iy = y_strides[gid];
 
   res_g[i] = x_g[ix] * y_g[iy];
+}
+
+__kernel 
+void bincount__bincount(__global const int *x_g,
+                        __global const float *y_g, 
+                        __global float *res_g)
+{
+  int gid = get_global_id(0);
+  int i = x_g[gid];
+
+  res_g[i] += y_g[gid];
 }
