@@ -7,42 +7,14 @@ import torch
 import matplotlib.pyplot as plt
 import pytest
 
-from nnfs.datasets import spiral_data
-
 import cv2
 
 def spiral_data(samples, classes):
-    X = np.zeros((samples*classes, 2))
-    y = np.zeros(samples*classes, dtype='uint8')
-    for class_number in range(classes):
-        ix = range(samples*class_number, samples*(class_number+1))
-        r = np.linspace(0.0, 1, samples)
-        t = np.linspace(class_number*4, (class_number+1)*4, samples) + np.random.randn(samples)*0.2
-        X[ix] = np.c_[r*np.sin(t*2.5), r*np.cos(t*2.5)]
-        y[ix] = class_number
-    return X, y
-
-def spiral():
-    r = np.linspace(0.0, 1, 100)
-    t = np.linspace(0, 2*np.pi*2, 100) + np.random.randn(100)*0.2
-
-    c = np.arange(3) / np.pi
-
-    y = np.arange(3).repeat(100) # 100 samples
-    t = np.linspace(0, 4*2*np.pi, 100).repeat(3) + y/np.pi
-    r = np.tile(np.linspace(0.0, 1, 100), 3)
-    X = np.stack([r*np.sin(t), r*np.cos(t)])
-
-    plt.scatter(r*np.sin(t), r*np.cos(t), c=y)
-    plt.show()
-
-    t = t + c[0]
-
-    a = np.c_[r*np.sin(t), r*np.cos(t)]
-
-    plt.scatter(r*np.sin(np.linspace(0, 2*np.pi, 100)),r* np.cos(np.linspace(0,2*np.pi, 100)))
-
-#import tensorflow as tf
+    y_true = np.arange(classes).repeat(samples)
+    t = np.linspace(0, 4*2*np.pi, samples).repeat(classes) + y_true/np.pi + np.random.randn(samples * classes) * 0.3
+    r = np.tile(np.linspace(0.0, 1, samples), classes)
+    X = r * np.stack([np.sin(t), np.cos(t)])
+    return X.T, y_true
 
 def test_sigmoid():
     a = np.random.randn(10)
