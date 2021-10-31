@@ -6,17 +6,21 @@ class NumpyType(type):
         return getattr(np, attr)
 
 class Numpy(metaclass=NumpyType):
+    default_dispatch = lambda *args, **kwargs: args
+
     # np.lib.stride_tricks.as_strided does not use a dispatcher by default
     def as_strided(x, **kwargs):
-        return np.core.overrides.array_function_dispatch \
-                (lambda *args, **kwargs: args, verify=False) \
-                (np.lib.stride_tricks.as_strided) (x, **kwargs)
+        wrapper = np.core.overrides.array_function_dispatch(Numpy.default_dispatch, verify=False)
+        return wrapper(np.lib.stride_tricks.as_strided) (x, **kwargs)
 
     # naming conventions
     pow = np.power
     mul = np.multiply
 
-    def to_cpu(x): return x.view(np.ndarray)
+    def to_cpu(x):
+        wrapper = np.core.overrides.array_function_dispatch(Numpy.default_dispatch, verify=False)
+        def to_cpu(x): return x.view(np.ndarray)
+        return wrapper(to_cpu) (x)
 
 class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     device = Numpy
@@ -92,7 +96,7 @@ class Tensor(np.lib.mixins.NDArrayOperatorsMixin):
     def unbroadcast(backward):
         # summation is the dual of broadcasting
         def reduce(grad, inp):
-            shape = inp.shape # np.asarray(inp).shape
+            shape = inp.shape
             mask = np.insert(shape, 0, [-1]*abs(grad.ndim - len(shape))) != grad.shape
             if axis := tuple( np.r_[:grad.ndim][mask] ):
                 return Tensor.device.reshape(Tensor.device.sum(grad, axis=axis), shape)
