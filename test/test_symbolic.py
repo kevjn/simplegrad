@@ -25,8 +25,8 @@ def test_logsoftmax():
     out = Tensor(SymbolicArray(a, 'a')).logsoftmax().sum()
     out.backward()
 
-    assert np.allclose(out.data.view(np.ndarray), eval(out.data.symbolic))
-    assert np.allclose(out.grad.view(np.ndarray), eval(out.grad.symbolic))
+    assert np.allclose(out.data.view(np.ndarray), eval(out.data.expand()))
+    assert np.allclose(out.grad.view(np.ndarray), eval(out.grad.expand()))
 
 def test_maxpool2d():
     image  = np.random.ranf([2, 2, 4, 4]).astype(np.float32)
@@ -34,8 +34,8 @@ def test_maxpool2d():
     out = Tensor(SymbolicArray(image, 'image')).maxpool2d().sum()
     out.backward()
 
-    assert (out.data.view(np.ndarray) == eval(out.data.symbolic)).all()
-    assert (out.grad.view(np.ndarray) == eval(out.grad.symbolic)).all()
+    assert (out.data.view(np.ndarray) == eval(out.data.expand())).all()
+    assert (out.grad.view(np.ndarray) == eval(out.grad.expand())).all()
 
 def test_conv2d():
     image  = np.random.ranf([10, 16, 20, 40]).astype(np.float32) # N, in_channels, Hin, Win
@@ -45,8 +45,8 @@ def test_conv2d():
     out = Tensor(SymbolicArray(image, 'image')).conv2d(w).sum()
     out.backward()
 
-    assert (out.data.view(np.ndarray) == eval(out.data.symbolic)).all()
-    assert (out.grad.view(np.ndarray) == eval(out.grad.symbolic)).all()
+    assert (out.data.view(np.ndarray) == eval(out.data.expand())).all()
+    assert (out.grad.view(np.ndarray) == eval(out.grad.expand())).all()
 
 def test_simple_classifier():
     a = np.random.randn(30, 2).astype(np.float32)
@@ -65,19 +65,22 @@ def test_simple_classifier():
 
     optim = Adam([tw0, tb0, tw1, tb1])
 
-    for epoch in range(1):
-        out = Tensor(SymbolicArray(a, 'a')).einsum("ij,jk->ik", tw0)\
-            .add(tb0).relu()\
-            .einsum("ij,jk->ik", tw1).add(tb1)
-        out = out.logsoftmax()
+    out = Tensor(SymbolicArray(a, 'a')).einsum("ij,jk->ik", tw0)\
+        .add(tb0).relu()\
+        .einsum("ij,jk->ik", tw1).add(tb1)
+    out = out.logsoftmax()
 
-        loss = Tensor(SymbolicArray(y, 'y')).mul(out).mul(-1.0).sum(axis=1).mean()
+    loss = Tensor(SymbolicArray(y, 'y')).mul(out).mul(-1.0).sum(axis=1).mean()
 
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
+    optim.zero_grad()
+    loss.backward()
+    optim.step()
 
-    assert (out.data.view(np.ndarray) == eval(out.data.symbolic)).all()
+    prg = "\n".join(f"{k} = {v}" for k,v in out.grad.locals.items())
+    exec(prg)
     assert (out.grad.view(np.ndarray) == eval(out.grad.symbolic)).all()
-    assert (loss.data.view(np.ndarray) == eval(loss.data.symbolic)).all()
-    assert (loss.grad.view(np.ndarray) == eval(loss.grad.symbolic)).all()
+
+    assert (out.data.view(np.ndarray) == eval(out.data.expand())).all()
+    assert (out.grad.view(np.ndarray) == eval(out.grad.expand())).all()
+    assert (loss.data.view(np.ndarray) == eval(loss.data.expand())).all()
+    assert (loss.grad.view(np.ndarray) == eval(loss.grad.expand())).all()
